@@ -36,13 +36,28 @@ const (
 	ldSoPreloadPath       = "/etc/ld.so.preload"
 	oldLauncherPath       = "/opt/datadog/apm/inject/launcher.preload.so"
 	localStableConfigPath = "/etc/datadog-agent/application_monitoring.yaml"
+
+	// defaultTmpfsInjectDir is a symlink living on tmpfs (/run is a tmpfs on
+	// systemd hosts, wiped on every boot) that points at the persistent
+	// injector payload under injectorPath. When systemd manages the injector,
+	// /etc/ld.so.preload references the launcher through this symlink instead
+	// of its persistent path. After a reboot the symlink is gone, so a stale
+	// ld.so.preload entry resolves to a missing file and ld.so silently skips
+	// it — the host comes up usable even if shutdown-time cleanup never ran.
+	// The datadog-apm-inject service recreates the symlink on every boot.
+	//
+	// A symlink (not a copy) is required: the AppArmor profile only grants load
+	// permission to /opt/datadog-packages/** and AppArmor mediates the resolved
+	// path, so the launcher file must stay under injectorPath.
+	defaultTmpfsInjectDir = "/run/datadog-apm-inject"
 )
 
 // NewInstaller returns a new APM injector installer
 func NewInstaller() *InjectorInstaller {
 	a := &InjectorInstaller{
-		installPath: injectorPath,
-		Env:         env.FromEnv(),
+		installPath:    injectorPath,
+		tmpfsInjectDir: defaultTmpfsInjectDir,
+		Env:            env.FromEnv(),
 	}
 	a.ldPreloadFileInstrument = newFileMutator(ldSoPreloadPath, a.setLDPreloadConfigContent, nil, nil)
 	a.ldPreloadFileUninstrument = newFileMutator(ldSoPreloadPath, a.deleteLDPreloadConfigContent, nil, nil)
@@ -59,6 +74,18 @@ type InjectorInstaller struct {
 	dockerConfigInstrument    *fileMutator
 	dockerConfigUninstrument  *fileMutator
 	Env                       *env.Env
+
+	// tmpfsInjectDir is the tmpfs symlink directory used to reference the
+	// launcher in a reboot-safe way. Defaults to defaultTmpfsInjectDir;
+	// overridable in tests.
+	tmpfsInjectDir string
+	// useTmpfsLink, when set, makes InstrumentLDPreload reference the launcher
+	// through the tmpfs symlink (see InstrumentLDPreloadService) rather than
+	// its persistent path. Set on systemd-managed hosts only.
+	useTmpfsLink bool
+	// launcherPath is the path written to /etc/ld.so.preload. Empty until
+	// resolved; ldPreloadEntry falls back to the persistent OCI path.
+	launcherPath string
 
 	rollbacks []func() error
 	cleanups  []func()
@@ -153,11 +180,21 @@ func (a *InjectorInstaller) Instrument(ctx context.Context) (retErr error) {
 			// Best-effort: set up the systemd unit that re-asserts
 			// /etc/ld.so.preload on every boot. This never fails the install — the
 			// unit is a reliability enhancement, and the direct InstrumentLDPreload
-			// below already persists across reboots on its own.
-			a.setupHostPreload(ctx)
+			// below already persists across reboots on its own. When the unit is
+			// managed, the direct write below must reference the launcher through
+			// the reboot-safe tmpfs symlink (just like the service does on boot):
+			// otherwise it would append the persistent /opt path next to the
+			// service-written /run entry and reintroduce the reboot hazard the
+			// tmpfs path exists to avoid.
+			if managed := a.setupSystemdPreloadUnit(ctx); managed {
+				a.useTmpfsLink = true
+			}
 		}
 		// Always write /etc/ld.so.preload directly so the current boot is covered
-		// (and so host injection works even when the systemd unit was skipped).
+		// (and so host injection works even when the systemd unit was skipped, or
+		// failed to start immediately). useTmpfsLink, set above, selects the
+		// tmpfs symlink path on systemd-managed hosts and the persistent path
+		// otherwise; either way this write is idempotent with what the service does.
 		if err := a.InstrumentLDPreload(ctx); err != nil {
 			return err
 		}
@@ -188,15 +225,20 @@ func (a *InjectorInstaller) Instrument(ctx context.Context) (retErr error) {
 	return nil
 }
 
-// setupHostPreload installs (or refreshes) the datadog-apm-inject systemd unit
-// that re-asserts /etc/ld.so.preload on every boot, when a datadog-installer
+// setupSystemdPreloadUnit installs (or refreshes) the datadog-apm-inject systemd
+// unit that re-asserts /etc/ld.so.preload on every boot, when a datadog-installer
 // supporting `apm instrument-start` is available. If none is available, or the
 // unit setup fails for any reason, it degrades to direct ld.so.preload management
 // (the InstrumentLDPreload call in Instrument): the unit is a reliability
 // enhancement and must never fail the package install. Any stale unit left by a
 // previous install is removed so a doomed ExecStart is not left enabled.
-func (a *InjectorInstaller) setupHostPreload(ctx context.Context) {
-	span, ctx := telemetry.StartSpanFromContext(ctx, "setup_host_preload")
+//
+// It returns true when the unit was successfully set up (systemd-managed mode),
+// so the caller references the launcher through the reboot-safe tmpfs symlink in
+// its own direct ld.so.preload write. A false return means the caller must use
+// the persistent path (no unit recreates the tmpfs symlink on boot).
+func (a *InjectorInstaller) setupSystemdPreloadUnit(ctx context.Context) (managed bool) {
+	span, ctx := telemetry.StartSpanFromContext(ctx, "setup_systemd_preload_unit")
 	defer func() { span.Finish(nil) }()
 
 	mgr := NewSystemdServiceManager()
@@ -213,7 +255,7 @@ func (a *InjectorInstaller) setupHostPreload(ctx context.Context) {
 		if err := mgr.Uninstall(ctx); err != nil {
 			log.Warnf("failed to remove stale apm-inject systemd service: %v", err)
 		}
-		return
+		return false
 	}
 
 	span.SetTag("mode", "systemd")
@@ -226,11 +268,12 @@ func (a *InjectorInstaller) setupHostPreload(ctx context.Context) {
 		if uErr := mgr.Uninstall(ctx); uErr != nil {
 			log.Warnf("failed to clean up partial apm-inject systemd service: %v", uErr)
 		}
-		return
+		return false
 	}
 	a.rollbacks = append(a.rollbacks, func() error {
 		return mgr.Uninstall(ctx)
 	})
+	return true
 }
 
 // Uninstrument uninstruments the APM injector
@@ -262,15 +305,31 @@ func (a *InjectorInstaller) Uninstrument(ctx context.Context) error {
 
 // setLDPreloadConfigContent sets the content of the LD preload configuration
 func (a *InjectorInstaller) setLDPreloadConfigContent(_ context.Context, ldSoPreload []byte) ([]byte, error) {
-	launcherPreloadPath := path.Join(a.installPath, "inject", "launcher.preload.so")
+	launcherPreloadPath := a.ldPreloadEntry()
 
 	if strings.Contains(string(ldSoPreload), launcherPreloadPath) {
 		// If the line of interest is already in /etc/ld.so.preload, return fast
 		return ldSoPreload, nil
 	}
 
-	if bytes.Contains(ldSoPreload, []byte(oldLauncherPath)) {
-		return bytes.ReplaceAll(ldSoPreload, []byte(oldLauncherPath), []byte(launcherPreloadPath)), nil
+	// Migrate any previously-written launcher path to the active one, in place.
+	// This covers the legacy deb path and — on hosts instrumented before the
+	// switch to the tmpfs symlink — the persistent OCI path. Leaving a stale
+	// persistent entry behind would re-introduce the reboot hazard the tmpfs
+	// path exists to avoid.
+	out := ldSoPreload
+	migrated := false
+	for _, legacy := range []string{oldLauncherPath, path.Join(a.installPath, "inject", "launcher.preload.so")} {
+		if legacy == launcherPreloadPath {
+			continue
+		}
+		if bytes.Contains(out, []byte(legacy)) {
+			out = bytes.ReplaceAll(out, []byte(legacy), []byte(launcherPreloadPath))
+			migrated = true
+		}
+	}
+	if migrated {
+		return out, nil
 	}
 
 	var buf bytes.Buffer
@@ -284,10 +343,63 @@ func (a *InjectorInstaller) setLDPreloadConfigContent(_ context.Context, ldSoPre
 	return buf.Bytes(), nil
 }
 
+// ldPreloadEntry returns the launcher path written to /etc/ld.so.preload. When
+// resolved (systemd-managed hosts), this is the tmpfs symlink path; otherwise
+// it falls back to the persistent launcher under installPath.
+func (a *InjectorInstaller) ldPreloadEntry() string {
+	if a.launcherPath != "" {
+		return a.launcherPath
+	}
+	return path.Join(a.installPath, "inject", "launcher.preload.so")
+}
+
+// enableTmpfsLink (re)creates the tmpfs symlink pointing at the persistent
+// injector payload and switches the ld.so.preload entry to the tmpfs path. It
+// must only be called after the real launcher has been verified, so a broken
+// launcher is never reachable through the symlink. On rollback the symlink is
+// removed.
+func (a *InjectorInstaller) enableTmpfsLink() error {
+	target := path.Join(a.installPath, "inject")
+	if err := linkAtomically(target, a.tmpfsInjectDir); err != nil {
+		return fmt.Errorf("failed to create tmpfs injector symlink %s -> %s: %w", a.tmpfsInjectDir, target, err)
+	}
+	a.launcherPath = path.Join(a.tmpfsInjectDir, "launcher.preload.so")
+	a.rollbacks = append(a.rollbacks, func() error {
+		return os.Remove(a.tmpfsInjectDir)
+	})
+	return nil
+}
+
+// linkAtomically creates (or atomically replaces) a symlink at link pointing
+// to target.
+func linkAtomically(target, link string) error {
+	if err := os.MkdirAll(filepath.Dir(link), 0755); err != nil {
+		return err
+	}
+	tmp := link + ".tmp"
+	if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Symlink(target, tmp); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, link); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
 // deleteLDPreloadConfigContent deletes the content of the LD preload configuration
 func (a *InjectorInstaller) deleteLDPreloadConfigContent(_ context.Context, ldSoPreload []byte) ([]byte, error) {
-	// we want to make sure that we also remove the line if it was updated to be a dynamic path (supporting no-op 32bit libraries)
-	regexPath := a.installPath + "/inject/(.*?/)?launcher\\.preload\\.so"
+	// Match both the persistent OCI install path and the tmpfs symlink path, so
+	// the entry is removed regardless of which one a host was instrumented
+	// with. The optional dynamic subdir supports no-op 32bit libraries.
+	alts := []string{regexp.QuoteMeta(a.installPath) + "/inject"}
+	if a.tmpfsInjectDir != "" {
+		alts = append(alts, regexp.QuoteMeta(a.tmpfsInjectDir))
+	}
+	regexPath := "(" + strings.Join(alts, "|") + ")/(.*?/)?launcher\\.preload\\.so"
 	// match beginning of the line and the [dynamic] path and trailing whitespaces (spaces\tabs\new lines) OR
 	// match ANY leading whitespaces (spaces\tabs\new lines) with the dynamic path
 	matcher := regexp.MustCompile("^" + regexPath + "(\\s*)|(\\s*)" + regexPath)
@@ -319,15 +431,41 @@ func (a *InjectorInstaller) verifySharedLib(ctx context.Context, libPath string)
 	return nil
 }
 
+// InstrumentLDPreloadService adds the injector to /etc/ld.so.preload using the
+// reboot-safe tmpfs symlink path. It is the entry point used when systemd
+// manages the injector: both during install (Instrument) and on every boot via
+// the datadog-apm-inject service's "instrument-start host" command. Referencing
+// the launcher through a /run symlink that the service recreates each boot means
+// a stale ld.so.preload entry becomes inert after a reboot, so the host stays
+// usable even if shutdown-time cleanup did not run.
+func (a *InjectorInstaller) InstrumentLDPreloadService(ctx context.Context) error {
+	a.useTmpfsLink = true
+	return a.InstrumentLDPreload(ctx)
+}
+
 // InstrumentLDPreload directly adds the injector library to /etc/ld.so.preload.
 // This is called by the systemd service via "datadog-installer apm instrument-start host"
 // and must not attempt to manage systemd (it would loop).
 func (a *InjectorInstaller) InstrumentLDPreload(ctx context.Context) (err error) {
-	launcherPath := path.Join(a.installPath, "inject", "launcher.preload.so")
-	log.Infof("Verifying APM injector launcher %s", launcherPath)
-	if err := a.verifySharedLib(ctx, launcherPath); err != nil {
+	// Always verify the real launcher payload (under installPath) before
+	// touching the symlink or ld.so.preload, so a broken launcher is never
+	// activated — neither directly nor through the tmpfs symlink.
+	ociLauncherPath := path.Join(a.installPath, "inject", "launcher.preload.so")
+	log.Infof("Verifying APM injector launcher %s", ociLauncherPath)
+	if err := a.verifySharedLib(ctx, ociLauncherPath); err != nil {
 		return err
 	}
+
+	// On systemd-managed hosts, reference the launcher through the tmpfs
+	// symlink instead of its persistent path (created only now that the
+	// launcher has been verified good).
+	if a.useTmpfsLink {
+		if err := a.enableTmpfsLink(); err != nil {
+			return err
+		}
+	}
+
+	launcherPath := a.ldPreloadEntry()
 	log.Infof("Adding APM injector launcher %s to %s", launcherPath, ldSoPreloadPath)
 	a.cleanups = append(a.cleanups, a.ldPreloadFileInstrument.cleanup)
 	rollback, err := a.ldPreloadFileInstrument.mutate(ctx)
@@ -347,6 +485,14 @@ func (a *InjectorInstaller) UninstrumentLDPreload(ctx context.Context) error {
 	_, err := a.ldPreloadFileUninstrument.mutate(ctx)
 	if err != nil {
 		return err
+	}
+	// Best-effort cleanup of the tmpfs symlink. It lives on tmpfs and is gone
+	// after a reboot regardless, but remove it eagerly so the host is left
+	// uninstrumented immediately.
+	if a.tmpfsInjectDir != "" {
+		if rmErr := os.Remove(a.tmpfsInjectDir); rmErr != nil && !os.IsNotExist(rmErr) {
+			log.Warnf("failed to remove tmpfs injector symlink %s: %v", a.tmpfsInjectDir, rmErr)
+		}
 	}
 	log.Infof("APM injector launcher removed from %s", ldSoPreloadPath)
 	return nil

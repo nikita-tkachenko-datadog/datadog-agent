@@ -54,7 +54,7 @@ type SystemdServiceManager struct {
 // ExecStart/ExecStop. installerPath is "" when no supported installer is found
 // (no candidate on disk, or only older ones); callers must then skip rendering
 // the unit and fall back to direct ld.so.preload management (see
-// setupHostPreload), since the candidate set is not guaranteed in practice.
+// setupSystemdPreloadUnit), since the candidate set is not guaranteed in practice.
 func NewSystemdServiceManager() *SystemdServiceManager {
 	installerPath, err := resolveInstallerPath(installerPathCandidates, supportsInstrumentSubcommands)
 	if err != nil {

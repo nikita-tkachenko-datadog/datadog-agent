@@ -92,7 +92,10 @@ func InstrumentAPMInjectorStart(ctx context.Context) (err error) {
 	defer func() { span.Finish(err) }()
 	installer := apminject.NewInstaller()
 	defer func() { installer.Finish(err) }()
-	return installer.InstrumentLDPreload(ctx)
+	// Invoked by the datadog-apm-inject service on every boot: use the
+	// reboot-safe tmpfs symlink path so the service repopulates /run after the
+	// tmpfs is wiped on boot.
+	return installer.InstrumentLDPreloadService(ctx)
 }
 
 // UninstrumentAPMInjectorStop directly removes the injector library from /etc/ld.so.preload.
