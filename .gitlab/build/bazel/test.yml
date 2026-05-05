@@ -35,10 +35,25 @@ bazel:test:windows-amd64:
 # Per-flavor test jobs. Each runs the tests for one agent flavor, mirroring the
 # dda inv test --flavor=<f> topology. --config=<flavor> sets
 # --test_tag_filters=flavor_<flavor>, selecting only the matching go_test variants.
+#
+# After the test run, each job verifies parity with `dda inv test --flavor=$FLAVOR`
+# from a Build Event Protocol JSON Bazel writes during the run. The BEP captures
+# which dd_agent_go_test variants actually executed (Bazel already filtered out
+# target_compatible_with-incompatible targets and we detect no-op binaries via
+# the test.log "no tests to run" marker), so the parity comparison is
+# inherently host- and flavor-aware without extra Bazel-query gymnastics.
 .bazel:test:flavor:
   extends: .bazel:test
+  variables:
+    BEP_FILE: $CI_PROJECT_DIR/bazel-bep-$FLAVOR.json
   script:
-    - bazel test --keep_going --config=$FLAVOR //...
+    - bazel test --keep_going --config=$FLAVOR --build_event_json_file=$BEP_FILE //...
+    - dda inv -- -e bazel.ensure-test-parity --bep $BEP_FILE --flavor-name $FLAVOR
+  artifacts:
+    when: always
+    paths:
+      - bazel-bep-*.json
+    expire_in: 1 week
 
 bazel:test:linux-amd64:base:
   extends: [ .bazel:test:flavor, .bazel:runner:linux-amd64 ]
@@ -80,23 +95,31 @@ bazel:test:linux-arm64:iot:
   variables:
     FLAVOR: iot
 
+# macOS runners need Python and Go installed before the parity check can run
+# `dda inv` and `go list`; the Linux runners already provide them.
+.bazel:test:flavor:macos:
+  extends: .bazel:test:flavor
+  before_script:
+    - !reference [.install_python_dependencies]
+    - !reference [.macos_setup_go]
+
 bazel:test:macos-amd64:base:
-  extends: [ .bazel:test:flavor, .bazel:runner:macos-amd64 ]
+  extends: [ .bazel:test:flavor:macos, .bazel:runner:macos-amd64 ]
   variables:
     FLAVOR: base
 
 bazel:test:macos-amd64:dogstatsd:
-  extends: [ .bazel:test:flavor, .bazel:runner:macos-amd64 ]
+  extends: [ .bazel:test:flavor:macos, .bazel:runner:macos-amd64 ]
   variables:
     FLAVOR: dogstatsd
 
 bazel:test:macos-arm64:base:
-  extends: [ .bazel:test:flavor, .bazel:runner:macos-arm64 ]
+  extends: [ .bazel:test:flavor:macos, .bazel:runner:macos-arm64 ]
   variables:
     FLAVOR: base
 
 bazel:test:macos-arm64:dogstatsd:
-  extends: [ .bazel:test:flavor, .bazel:runner:macos-arm64 ]
+  extends: [ .bazel:test:flavor:macos, .bazel:runner:macos-arm64 ]
   variables:
     FLAVOR: dogstatsd
 
@@ -111,4 +134,3 @@ bazel:test:windows-amd64:base:
       //... --
       -//bazel/rules/dd_packaging/...
       -//packages/agent/linux/...
-
