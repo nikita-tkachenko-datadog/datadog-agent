@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/DataDog/datadog-agent/comp/core/telemetry/def"
 	"github.com/DataDog/datadog-agent/pkg/opentelemetry-mapping-go/inframetadata"
@@ -20,6 +21,7 @@ import (
 	datadogconfig "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/datadog/config"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configoptional"
+	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -31,6 +33,28 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/opentelemetry-mapping-go/otlp/metrics"
 )
 
+// Legacy DefaultForwarder defaults reproduced at the OTel exporterhelper layer
+// so that turning on the UseSyncForwarder feature gate preserves the in-flight
+// concurrency, queue depth, retry budget, and per-request timeout that the
+// async forwarder enforced before. Tweak in lockstep with the corresponding
+// forwarder_* settings in serializer.go::setupForwarder if those ever change.
+const (
+	// legacyForwarderQueueSize matches the sum of the legacy forwarder's
+	// high_prio + low_prio + requeue buffers (100 each).
+	legacyForwarderQueueSize = 300
+	// legacyForwarderNumConsumers matches forwarder_num_workers = 1.
+	legacyForwarderNumConsumers = 1
+	// legacyForwarderTimeout matches forwarder_timeout = 20 seconds.
+	legacyForwarderTimeout = 20 * time.Second
+	// legacyForwarderBackoffInitial / Max / MaxElapsed mirror the
+	// forwarder_backoff_* and forwarder_retry_queue_capacity_time_interval_sec
+	// settings: base 2s, factor 2, cap 64s, total 15 min budget.
+	legacyForwarderBackoffInitial    = 2 * time.Second
+	legacyForwarderBackoffMultiplier = 2
+	legacyForwarderBackoffMax        = 64 * time.Second
+	legacyForwarderRetryMaxElapsed   = 15 * time.Minute
+)
+
 func newDefaultConfig() component.Config {
 	mcfg := MetricsConfig{
 		APMStatsReceiverAddr: "http://localhost:8126/v0.6/stats",
@@ -39,11 +63,24 @@ func newDefaultConfig() component.Config {
 	pkgmcfg := datadogconfig.CreateDefaultConfig().(*datadogconfig.Config)
 	mcfg.Metrics = pkgmcfg.Metrics
 
+	queue := exporterhelper.NewDefaultQueueConfig()
+	queue.QueueSize = legacyForwarderQueueSize
+	queue.NumConsumers = legacyForwarderNumConsumers
+
+	retry := configretry.NewDefaultBackOffConfig()
+	retry.InitialInterval = legacyForwarderBackoffInitial
+	retry.Multiplier = legacyForwarderBackoffMultiplier
+	retry.MaxInterval = legacyForwarderBackoffMax
+	retry.MaxElapsedTime = legacyForwarderRetryMaxElapsed
+
 	return &ExporterConfig{
-		// Disable timeout; we don't really do HTTP requests on the ConsumeMetrics call.
-		TimeoutConfig: exporterhelper.TimeoutConfig{Timeout: 0},
-		// TODO (AP-1294): Fine-tune queue settings and look into retry settings.
-		QueueBatchConfig: configoptional.Some(exporterhelper.NewDefaultQueueConfig()),
+		// 20s per request matches the legacy forwarder_timeout. Was previously
+		// 0 because ConsumeMetrics returned immediately under the async
+		// forwarder; with the sync forwarder ConsumeMetrics now drives the HTTP
+		// round-trip, so a real timeout is required.
+		TimeoutConfig:    exporterhelper.TimeoutConfig{Timeout: legacyForwarderTimeout},
+		QueueBatchConfig: configoptional.Some(queue),
+		RetryConfig:      retry,
 
 		Metrics:      mcfg,
 		API:          pkgmcfg.API,

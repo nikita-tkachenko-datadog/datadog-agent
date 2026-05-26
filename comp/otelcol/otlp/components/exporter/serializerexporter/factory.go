@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -22,7 +23,6 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/datadog/featuregates"
 
 	telemetry "github.com/DataDog/datadog-agent/comp/core/telemetry/def"
-	"github.com/DataDog/datadog-agent/comp/forwarder/defaultforwarder"
 	"github.com/DataDog/datadog-agent/pkg/opentelemetry-mapping-go/inframetadata"
 	"github.com/DataDog/datadog-agent/pkg/opentelemetry-mapping-go/otlp/attributes"
 	otlpmetrics "github.com/DataDog/datadog-agent/pkg/opentelemetry-mapping-go/otlp/metrics"
@@ -215,15 +215,35 @@ func (f *factory) createMetricExporter(ctx context.Context, params exp.Settings,
 	if err != nil {
 		return nil, err
 	}
-	var forwarder *defaultforwarder.DefaultForwarder
+	var ownedForwarder stoppableForwarder
 	if f.s == nil {
-		f.s, forwarder, err = InitSerializer(params.Logger, cfg, f.hostProvider)
+		// Agent OTLP ingestion runs inside the agent binary and shares the agent's
+		// forwarder configuration; users can tune the forwarder directly via
+		// agent config, and the OTel exporter metrics path isn't surfaced in
+		// that mode anyway, so the sync forwarder fix from OTAGENT-1024 doesn't
+		// apply. Keep the legacy async forwarder there.
+		useSync := useSyncForwarderGate.IsEnabled() && f.ipath != agentOTLPIngest
+		var httpClient *http.Client
+		if useSync {
+			// Build the HTTP client from the user's HTTPConfig so OTel-native
+			// settings (timeout, headers, conn limits, HTTP/2, TLS, proxy) are
+			// honored. Auth and middleware extensions are intentionally not
+			// supported here — Datadog auth is the API key, not OTel auth.
+			// Pass nil extensions: Datadog uses API-key auth (handled by the
+			// forwarder's resolver), so OTel auth/middleware extensions don't apply.
+			httpClient, err = cfg.HTTPConfig.ToClient(ctx, nil, params.TelemetrySettings)
+			if err != nil {
+				return nil, fmt.Errorf("build http client from HTTPConfig: %w", err)
+			}
+		}
+		var fw stoppableForwarder
+		f.s, fw, err = initSerializerInternal(params.Logger, cfg, f.hostProvider, useSync, httpClient)
 		if err != nil {
 			return nil, err
 		}
-		params.Logger.Info("starting forwarder")
-		err := forwarder.Start()
-		if err != nil {
+		ownedForwarder = fw
+		params.Logger.Info("starting forwarder", zap.Bool("sync", useSync))
+		if err := fw.Start(); err != nil {
 			params.Logger.Error("failed to start forwarder", zap.Error(err))
 		}
 	}
@@ -268,6 +288,7 @@ func (f *factory) createMetricExporter(ctx context.Context, params exp.Settings,
 	exporter, err := exporterhelper.NewMetrics(ctx, params, cfg, newExp.ConsumeMetrics,
 		exporterhelper.WithQueue(cfg.QueueBatchConfig),
 		exporterhelper.WithTimeout(cfg.TimeoutConfig),
+		exporterhelper.WithRetry(cfg.RetryConfig),
 		// the metrics remapping code mutates data
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: true}),
 		exporterhelper.WithShutdown(func(ctx context.Context) error {
@@ -277,8 +298,8 @@ func (f *factory) createMetricExporter(ctx context.Context, params exp.Settings,
 					return err
 				}
 			}
-			if forwarder != nil {
-				forwarder.Stop()
+			if ownedForwarder != nil {
+				ownedForwarder.Stop()
 			}
 			return nil
 		}),
