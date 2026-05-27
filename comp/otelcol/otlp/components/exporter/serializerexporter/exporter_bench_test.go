@@ -160,7 +160,7 @@ func buildBenchExporter(t testing.TB, cfg *ExporterConfig) component.Component {
 	var injectedSerializer serializer.MetricSerializer
 	if useSyncForwarderGate.IsEnabled() {
 		httpClient := &http.Client{Timeout: cfg.HTTPConfig.Timeout}
-		ser, _, err := initSyncSerializerForTest(zap.NewNop(), cfg, hostGetter, httpClient)
+		ser, _, err := initSyncSerializerForTest(t, zap.NewNop(), cfg, hostGetter, httpClient)
 		require.NoError(t, err)
 		injectedSerializer = ser
 	}

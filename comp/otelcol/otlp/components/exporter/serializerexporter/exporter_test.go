@@ -39,9 +39,8 @@ import (
 	"github.com/DataDog/datadog-agent/comp/forwarder/defaultforwarder"
 	metricscompression "github.com/DataDog/datadog-agent/comp/serializer/metricscompression/def"
 	metricscompressionfx "github.com/DataDog/datadog-agent/comp/serializer/metricscompression/fx-otel"
-	"github.com/DataDog/datadog-agent/pkg/config/create"
+	configmock "github.com/DataDog/datadog-agent/pkg/config/mock"
 	pkgconfigmodel "github.com/DataDog/datadog-agent/pkg/config/model"
-	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
 	configutils "github.com/DataDog/datadog-agent/pkg/config/utils"
 	"github.com/DataDog/datadog-agent/pkg/metrics"
 	source "github.com/DataDog/datadog-agent/pkg/opentelemetry-mapping-go/otlp/attributes/source"
@@ -1023,7 +1022,7 @@ func TestDefaultForwarder_SwallowsErrors(t *testing.T) {
 // via a mini-Fx app. This simulates the DDOT production path where
 // cmd/otel-agent/subcommands/run/command.go injects OTelSyncForwarder into the
 // shared serializer (OTAGENT-1024). Not for use outside of tests.
-func initSyncSerializerForTest(logger *zap.Logger, cfg *ExporterConfig, sourceProvider source.Provider, httpClient *http.Client) (*serializer.Serializer, *defaultforwarder.OTelSyncForwarder, error) {
+func initSyncSerializerForTest(t testing.TB, logger *zap.Logger, cfg *ExporterConfig, sourceProvider source.Provider, httpClient *http.Client) (*serializer.Serializer, *defaultforwarder.OTelSyncForwarder, error) {
 	var f defaultforwarder.Forwarder
 	var s *serializer.Serializer
 
@@ -1034,9 +1033,7 @@ func initSyncSerializerForTest(logger *zap.Logger, cfg *ExporterConfig, sourcePr
 		fx.Supply(logger),
 		fxutil.FxAgentBase(),
 		fx.Provide(func() coreconfig.Component {
-			pkgconfig := create.NewConfig("DD", "")
-			pkgconfigsetup.InitConfig(pkgconfig)
-			pkgconfig.BuildSchema()
+			pkgconfig := configmock.New(t)
 			pkgconfig.Set("api_key", string(cfg.API.Key), pkgconfigmodel.SourceFile)
 			pkgconfig.Set("site", cfg.API.Site, pkgconfigmodel.SourceFile)
 			if cfg.Metrics.Metrics.TCPAddrConfig.Endpoint != "" {
