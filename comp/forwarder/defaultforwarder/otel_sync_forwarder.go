@@ -18,6 +18,7 @@ import (
 	"github.com/DataDog/datadog-agent/comp/forwarder/defaultforwarder/resolver"
 	"github.com/DataDog/datadog-agent/comp/forwarder/defaultforwarder/transaction"
 	"github.com/DataDog/datadog-agent/pkg/config/utils"
+	"github.com/DataDog/datadog-agent/pkg/version"
 )
 
 // OTelSyncForwarder is a synchronous forwarder that aggregates and returns
@@ -78,7 +79,14 @@ func (f *OTelSyncForwarder) sendHTTPTransactions(transactions []*transaction.HTT
 
 // SubmitTransaction sends a single transaction synchronously. This is the main
 // path used by pkg/serializer's v2 pipelines.
+// Mirrors DefaultForwarder.SubmitTransaction header injection so agent-version,
+// user-agent, and allow-arbitrary-tag headers are present on v2 series payloads.
 func (f *OTelSyncForwarder) SubmitTransaction(txn *transaction.HTTPTransaction) error {
+	txn.Headers.Set(versionHTTPHeaderKey, version.AgentVersion)
+	txn.Headers.Set(useragentHTTPHeaderKey, "datadog-agent/"+version.AgentVersion)
+	if f.config.GetBool("allow_arbitrary_tags") {
+		txn.Headers.Set(arbitraryTagHTTPHeaderKey, "true")
+	}
 	return f.sendHTTPTransactions([]*transaction.HTTPTransaction{txn})
 }
 
