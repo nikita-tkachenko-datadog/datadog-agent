@@ -37,9 +37,9 @@ import (
 // benchmarks show parallelism — set to 0 for the fastest local loopback.
 type fakeIntake struct {
 	*httptest.Server
-	requests         atomic.Int64
-	bytes            atomic.Int64
-	status           int
+	requests          atomic.Int64
+	bytes             atomic.Int64
+	status            int
 	artificialLatency time.Duration
 }
 
