@@ -278,10 +278,10 @@ func buildMetricsExporterConfig(cfg *datadogconfig.Config, shutdownFunc componen
 		httpCfg.Timeout = 20 * time.Second
 	}
 	return &serializerexporter.ExporterConfig{
-		Metrics:          serializerexporter.MetricsConfig{Metrics: cfg.Metrics},
-		TimeoutConfig:    exporterhelper.TimeoutConfig{Timeout: httpCfg.Timeout},
-		HTTPConfig:       httpCfg,
-		RetryConfig:      cfg.BackOffConfig,
+		Metrics:       serializerexporter.MetricsConfig{Metrics: cfg.Metrics},
+		TimeoutConfig: exporterhelper.TimeoutConfig{Timeout: httpCfg.Timeout},
+		HTTPConfig:    httpCfg,
+		RetryConfig:   cfg.BackOffConfig,
 		// API carries the key and site so that when UseSyncForwarder is enabled
 		// the DDOT path can create its own serializer/forwarder rather than reusing
 		// the agent's shared serializer (which has an async forwarder).

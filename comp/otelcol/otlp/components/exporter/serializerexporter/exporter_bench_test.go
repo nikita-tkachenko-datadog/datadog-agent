@@ -290,4 +290,3 @@ func BenchmarkConsumeMetrics_SyncForwarder_Consumers(b *testing.B) {
 		}
 	}
 }
-
