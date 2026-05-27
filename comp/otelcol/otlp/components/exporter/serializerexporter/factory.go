@@ -222,6 +222,10 @@ func (f *factory) createMetricExporter(ctx context.Context, params exp.Settings,
 		// agent config, and the OTel exporter metrics path isn't surfaced in
 		// that mode anyway, so the sync forwarder fix from OTAGENT-1024 doesn't
 		// apply. Keep the legacy async forwarder there.
+		//
+		// DDOT: when UseSyncForwarder is enabled the datadogexporter passes nil
+		// here instead of the agent's shared serializer, causing createMetricExporter
+		// to build a dedicated sync serializer from ExporterConfig (OTAGENT-1024).
 		useSync := useSyncForwarderGate.IsEnabled() && f.ipath != agentOTLPIngest
 		var httpClient *http.Client
 		if useSync {
@@ -247,6 +251,7 @@ func (f *factory) createMetricExporter(ctx context.Context, params exp.Settings,
 			params.Logger.Error("failed to start forwarder", zap.Error(err))
 		}
 	}
+	s := f.s
 
 	// TODO: Ideally the attributes translator would be created once and reused
 	// across all signals. This would need unifying the logsagent and serializer
@@ -267,7 +272,7 @@ func (f *factory) createMetricExporter(ctx context.Context, params exp.Settings,
 
 	var reporter *inframetadata.Reporter
 	if cfg.HostMetadata.Enabled {
-		reporter, err = f.Reporter(params, f.s, cfg.HostMetadata.ReporterPeriod)
+		reporter, err = f.Reporter(params, s, cfg.HostMetadata.ReporterPeriod)
 		if err != nil {
 			return nil, err
 		}
@@ -280,7 +285,7 @@ func (f *factory) createMetricExporter(ctx context.Context, params exp.Settings,
 		usageMetric = f.store.DDOTMetrics
 	}
 
-	newExp, err := NewExporter(f.s, cfg, hostGetter, f.createConsumer, tr, params, reporter, f.gatewayUsage, usageMetric, f.store.DDOTGWUsage, f.ipath)
+	newExp, err := NewExporter(s, cfg, hostGetter, f.createConsumer, tr, params, reporter, f.gatewayUsage, usageMetric, f.store.DDOTGWUsage, f.ipath)
 	if err != nil {
 		return nil, err
 	}

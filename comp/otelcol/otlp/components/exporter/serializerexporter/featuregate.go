@@ -24,3 +24,11 @@ var useSyncForwarderGate = featuregate.GlobalRegistry().MustRegister(
 	featuregate.WithRegisterDescription("Send metrics synchronously inside the serializer exporter so failures propagate to OTel exporterhelper."),
 	featuregate.WithRegisterReferenceURL("https://datadoghq.atlassian.net/browse/OTAGENT-1024"),
 )
+
+// IsSyncForwarderEnabled reports whether the UseSyncForwarder feature gate is
+// currently enabled. Used by the datadogexporter to decide whether to bypass
+// the shared agent serializer and let the serializerexporter build its own
+// sync forwarder from ExporterConfig (OTAGENT-1024 DDOT fix).
+func IsSyncForwarderEnabled() bool {
+	return useSyncForwarderGate.IsEnabled()
+}

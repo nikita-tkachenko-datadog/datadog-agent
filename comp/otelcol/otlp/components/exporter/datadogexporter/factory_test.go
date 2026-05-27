@@ -63,6 +63,21 @@ func TestBuildMetricsExporterConfig_ZeroTimeoutFallback(t *testing.T) {
 	assert.Equal(t, 20*time.Second, ex.TimeoutConfig.Timeout)
 }
 
+// TestBuildMetricsExporterConfig_APIPassThrough verifies that the API key and
+// site are forwarded from the datadogexporter config to the serializer exporter
+// config so that the serializerexporter can create its own sync serializer in
+// the DDOT path (needed when UseSyncForwarder is enabled).
+func TestBuildMetricsExporterConfig_APIPassThrough(t *testing.T) {
+	cfg, ok := CreateDefaultConfig().(*datadogconfig.Config)
+	require.True(t, ok)
+	cfg.API.Key = "secret-key"
+	cfg.API.Site = "datadoghq.eu"
+
+	ex := buildMetricsExporterConfig(cfg, nil)
+
+	assert.Equal(t, datadogconfig.APIConfig{Key: "secret-key", Site: "datadoghq.eu"}, ex.API)
+}
+
 // TestBuildMetricsExporterConfig_RetryPassThrough verifies that the
 // retry_on_failure settings from the datadogexporter config are forwarded to
 // the serializer exporter's RetryConfig so the OTel exporterhelper retry layer
