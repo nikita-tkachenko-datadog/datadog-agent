@@ -67,6 +67,37 @@ func newFakeIntakeWithLatency(status int, latency time.Duration) *fakeIntake {
 	return fi
 }
 
+// newFakeIntakeWithHandler returns a fakeIntake whose response is fully
+// controlled by the provided handler function. The requests counter is
+// incremented before the handler is called so the handler can read it.
+func newFakeIntakeWithHandler(handler func(n int64, w http.ResponseWriter, r *http.Request)) *fakeIntake {
+	fi := &fakeIntake{}
+	fi.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := fi.requests.Add(1)
+		if r.ContentLength > 0 {
+			fi.bytes.Add(r.ContentLength)
+		}
+		_, _ = http.MaxBytesReader(w, r.Body, 1<<24).Read(make([]byte, 0))
+		_ = r.Body.Close()
+		handler(n, w, r)
+	}))
+	return fi
+}
+
+// retryExporterConfig builds a config suitable for retry tests: no queue
+// (synchronous ConsumeMetrics), retry enabled with very short backoff so
+// tests complete quickly, and no artificial HTTP client timeout that would
+// race with the retry budget.
+func retryExporterConfig(t testing.TB, intakeURL string) *ExporterConfig {
+	t.Helper()
+	cfg := benchExporterConfig(t, intakeURL) // starts with retry disabled, no queue
+	cfg.RetryConfig.Enabled = true
+	cfg.RetryConfig.InitialInterval = 5 * time.Millisecond
+	cfg.RetryConfig.MaxInterval = 20 * time.Millisecond
+	cfg.RetryConfig.MaxElapsedTime = 10 * time.Second
+	return cfg
+}
+
 // makeGaugeMetrics builds a pmetric.Metrics payload with n gauge data points.
 func makeGaugeMetrics(n int) pmetric.Metrics {
 	md := pmetric.NewMetrics()
@@ -302,4 +333,100 @@ func TestDefaultForwarder_SwallowsErrors(t *testing.T) {
 
 	// Default async forwarder enqueues the payload and returns nil immediately.
 	require.NoError(t, mc.ConsumeMetrics(context.Background(), makeGaugeMetrics(50)))
+}
+
+// TestSyncForwarder_RetryOnTransientError verifies that the OTel
+// exporterhelper retry layer retries on transient 5xx responses and that
+// ConsumeMetrics ultimately returns nil once the intake starts succeeding.
+// This validates the end-to-end retry path: sync forwarder returns the HTTP
+// error → exporterhelper applies backoff and retries → eventual success.
+func TestSyncForwarder_RetryOnTransientError(t *testing.T) {
+	restore := setSyncForwarderGate(t, true)
+	defer restore()
+
+	const failFirst = 2
+	intake := newFakeIntakeWithHandler(func(n int64, w http.ResponseWriter, _ *http.Request) {
+		if n <= failFirst {
+			w.WriteHeader(http.StatusInternalServerError)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+	defer intake.Close()
+
+	cfg := retryExporterConfig(t, intake.URL)
+	exp := buildBenchExporter(t, cfg)
+	defer func() { _ = exp.Shutdown(context.Background()) }()
+
+	mc, ok := exp.(metricsConsumer)
+	require.True(t, ok)
+
+	err := mc.ConsumeMetrics(context.Background(), makeGaugeMetrics(10))
+	require.NoError(t, err, "ConsumeMetrics should succeed after retries")
+	require.GreaterOrEqual(t, intake.requests.Load(), int64(failFirst+1),
+		"intake should have received at least %d requests (failures + success)", failFirst+1)
+}
+
+// TestSyncForwarder_RetryBudgetExhausted verifies that when the sync
+// forwarder is on and the intake consistently fails, the error surfaces
+// through ConsumeMetrics once the retry budget is exhausted.
+func TestSyncForwarder_RetryBudgetExhausted(t *testing.T) {
+	restore := setSyncForwarderGate(t, true)
+	defer restore()
+
+	intake := newFakeIntake(http.StatusInternalServerError)
+	defer intake.Close()
+
+	cfg := retryExporterConfig(t, intake.URL)
+	// Very short budget so the test doesn't spend 10 s waiting.
+	cfg.RetryConfig.MaxElapsedTime = 200 * time.Millisecond
+	exp := buildBenchExporter(t, cfg)
+	defer func() { _ = exp.Shutdown(context.Background()) }()
+
+	mc, ok := exp.(metricsConsumer)
+	require.True(t, ok)
+
+	err := mc.ConsumeMetrics(context.Background(), makeGaugeMetrics(10))
+	require.Error(t, err, "ConsumeMetrics should return error after retry budget is exhausted")
+	require.GreaterOrEqual(t, intake.requests.Load(), int64(1),
+		"intake should have received at least one request before budget was exhausted")
+}
+
+// TestSyncForwarder_RetryConfig_Respected verifies that a RetryConfig with
+// a very short MaxElapsedTime is honoured: the exporter gives up faster than
+// a test with a long budget and the error surfaces promptly.
+func TestSyncForwarder_RetryConfig_Respected(t *testing.T) {
+	restore := setSyncForwarderGate(t, true)
+	defer restore()
+
+	intake := newFakeIntake(http.StatusInternalServerError)
+	defer intake.Close()
+
+	// Two exporters with different retry budgets; both should fail, but the
+	// short-budget one should make fewer intake requests.
+	cfgShort := retryExporterConfig(t, intake.URL)
+	cfgShort.RetryConfig.MaxElapsedTime = 50 * time.Millisecond
+
+	cfgLong := retryExporterConfig(t, intake.URL)
+	cfgLong.RetryConfig.MaxElapsedTime = 300 * time.Millisecond
+
+	expShort := buildBenchExporter(t, cfgShort)
+	defer func() { _ = expShort.Shutdown(context.Background()) }()
+
+	mcShort, ok := expShort.(metricsConsumer)
+	require.True(t, ok)
+	require.Error(t, mcShort.ConsumeMetrics(context.Background(), makeGaugeMetrics(10)))
+	reqsAfterShort := intake.requests.Load()
+
+	expLong := buildBenchExporter(t, cfgLong)
+	defer func() { _ = expLong.Shutdown(context.Background()) }()
+
+	mcLong, ok := expLong.(metricsConsumer)
+	require.True(t, ok)
+	require.Error(t, mcLong.ConsumeMetrics(context.Background(), makeGaugeMetrics(10)))
+	reqsAfterLong := intake.requests.Load()
+
+	require.Greater(t, reqsAfterLong, reqsAfterShort,
+		"longer retry budget should produce more intake requests (short=%d, long=%d)",
+		reqsAfterShort, reqsAfterLong-reqsAfterShort)
 }

@@ -216,22 +216,12 @@ func (f *factory) createMetricsExporter(
 	f.consumeStatsPayload(ctx, &wg, statsIn, statsv, fmt.Sprintf("datadogexporter-%s-%s", set.BuildInfo.Command, set.BuildInfo.Version), set.Logger)
 
 	sf := serializerexporter.NewFactoryForOTelAgent(f.s, f.h, statsIn, f.gatewayUsage, f.store, f.reporter)
-	ex := &serializerexporter.ExporterConfig{
-		Metrics: serializerexporter.MetricsConfig{
-			Metrics: cfg.Metrics,
-		},
-		TimeoutConfig: exporterhelper.TimeoutConfig{
-			Timeout: cfg.Timeout,
-		},
-		HostMetadata:     cfg.HostMetadata,
-		QueueBatchConfig: cfg.QueueSettings,
-		ShutdownFunc: func(context.Context) error {
-			cancel()  // first cancel context
-			wg.Wait() // then wait for shutdown
-			close(statsIn)
-			return nil
-		},
-	}
+	ex := buildMetricsExporterConfig(cfg, func(context.Context) error {
+		cancel()  // first cancel context
+		wg.Wait() // then wait for shutdown
+		close(statsIn)
+		return nil
+	})
 	return sf.CreateMetrics(ctx, set, ex)
 }
 
@@ -263,6 +253,29 @@ func (f *factory) consumeStatsPayload(ctx context.Context, wg *sync.WaitGroup, s
 				}
 			}
 		}()
+	}
+}
+
+// buildMetricsExporterConfig translates a datadogconfig.Config into the
+// serializerexporter.ExporterConfig used to drive metrics export. Extracted
+// as a pure function so it can be unit-tested independently of the factory.
+func buildMetricsExporterConfig(cfg *datadogconfig.Config, shutdownFunc component.ShutdownFunc) *serializerexporter.ExporterConfig {
+	// Carry user-configured HTTP settings (proxy, TLS, headers, timeout …)
+	// into the serializer exporter. Apply a 20 s default when the user hasn't
+	// set an explicit timeout so the HTTP client stays bounded even without
+	// context propagation inside OTelSyncForwarder.
+	httpCfg := cfg.ClientConfig
+	if httpCfg.Timeout == 0 {
+		httpCfg.Timeout = 20 * time.Second
+	}
+	return &serializerexporter.ExporterConfig{
+		Metrics:          serializerexporter.MetricsConfig{Metrics: cfg.Metrics},
+		TimeoutConfig:    exporterhelper.TimeoutConfig{Timeout: httpCfg.Timeout},
+		HTTPConfig:       httpCfg,
+		RetryConfig:      cfg.BackOffConfig,
+		HostMetadata:     cfg.HostMetadata,
+		QueueBatchConfig: cfg.QueueSettings,
+		ShutdownFunc:     shutdownFunc,
 	}
 }
 
