@@ -9,12 +9,14 @@ package serializerexporter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/datadog"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/datadog/featuregates"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,12 +25,29 @@ import (
 	"go.opentelemetry.io/collector/exporter/exportertest"
 	"go.opentelemetry.io/collector/featuregate"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.uber.org/fx"
+	"go.uber.org/fx/fxevent"
+	"go.uber.org/zap"
 
-	"github.com/DataDog/datadog-agent/comp/core/telemetry/def"
+	coreconfig "github.com/DataDog/datadog-agent/comp/core/config"
+	delegatedauthnoopfx "github.com/DataDog/datadog-agent/comp/core/delegatedauth/fx-noop"
+	logdef "github.com/DataDog/datadog-agent/comp/core/log/def"
+	secrets "github.com/DataDog/datadog-agent/comp/core/secrets/def"
+	secretnooptypes "github.com/DataDog/datadog-agent/comp/core/secrets/noop-impl/types"
+	telemetry "github.com/DataDog/datadog-agent/comp/core/telemetry/def"
 	mocktelemetry "github.com/DataDog/datadog-agent/comp/core/telemetry/mock"
+	"github.com/DataDog/datadog-agent/comp/forwarder/defaultforwarder"
+	metricscompression "github.com/DataDog/datadog-agent/comp/serializer/metricscompression/def"
+	metricscompressionfx "github.com/DataDog/datadog-agent/comp/serializer/metricscompression/fx-otel"
+	"github.com/DataDog/datadog-agent/pkg/config/create"
+	pkgconfigmodel "github.com/DataDog/datadog-agent/pkg/config/model"
+	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
+	configutils "github.com/DataDog/datadog-agent/pkg/config/utils"
 	"github.com/DataDog/datadog-agent/pkg/metrics"
+	source "github.com/DataDog/datadog-agent/pkg/opentelemetry-mapping-go/otlp/attributes/source"
 	"github.com/DataDog/datadog-agent/pkg/serializer"
 	"github.com/DataDog/datadog-agent/pkg/tagset"
+	"github.com/DataDog/datadog-agent/pkg/util/compression"
 	"github.com/DataDog/datadog-agent/pkg/util/fxutil"
 	"github.com/DataDog/datadog-agent/pkg/util/otel"
 )
@@ -866,6 +885,8 @@ func TestDeltaSumAsRateAttribute(t *testing.T) {
 // TestSyncForwarder_PropagatesErrors is the headline test for OTAGENT-1024:
 // when the sync forwarder is on, a 5xx response from intake must surface back
 // through ConsumeMetrics rather than be silently swallowed.
+// Simulates DDOT: OTelSyncForwarder is injected via initSyncSerializerForTest,
+// mirroring cmd/otel-agent/subcommands/run/command.go.
 func TestSyncForwarder_PropagatesErrors(t *testing.T) {
 	restore := setSyncForwarderGate(t, true)
 	defer restore()
@@ -885,33 +906,9 @@ func TestSyncForwarder_PropagatesErrors(t *testing.T) {
 	require.GreaterOrEqual(t, intake.requests.Load(), int64(1), "intake should have received at least one request")
 }
 
-// TestDefaultForwarder_SwallowsErrors documents the legacy behavior the
-// feature gate exists to fix: with the gate off, intake 5xx is hidden from
-// ConsumeMetrics. If this test ever starts failing, the legacy path has
-// converged with the sync path and the feature gate can be retired.
-func TestDefaultForwarder_SwallowsErrors(t *testing.T) {
-	restore := setSyncForwarderGate(t, false)
-	defer restore()
-
-	intake := newFakeIntake(http.StatusInternalServerError)
-	defer intake.Close()
-
-	cfg := benchExporterConfig(t, intake.URL)
-	exp := buildBenchExporter(t, cfg)
-	defer func() { _ = exp.Shutdown(context.Background()) }()
-
-	mc, ok := exp.(metricsConsumer)
-	require.True(t, ok)
-
-	// Default async forwarder enqueues the payload and returns nil immediately.
-	require.NoError(t, mc.ConsumeMetrics(context.Background(), makeGaugeMetrics(50)))
-}
-
 // TestSyncForwarder_RetryOnTransientError verifies that the OTel
 // exporterhelper retry layer retries on transient 5xx responses and that
 // ConsumeMetrics ultimately returns nil once the intake starts succeeding.
-// This validates the end-to-end retry path: sync forwarder returns the HTTP
-// error → exporterhelper applies backoff and retries → eventual success.
 func TestSyncForwarder_RetryOnTransientError(t *testing.T) {
 	restore := setSyncForwarderGate(t, true)
 	defer restore()
@@ -950,7 +947,6 @@ func TestSyncForwarder_RetryBudgetExhausted(t *testing.T) {
 	defer intake.Close()
 
 	cfg := retryExporterConfig(t, intake.URL)
-	// Very short budget so the test doesn't spend 10 s waiting.
 	cfg.RetryConfig.MaxElapsedTime = 200 * time.Millisecond
 	exp := buildBenchExporter(t, cfg)
 	defer func() { _ = exp.Shutdown(context.Background()) }()
@@ -964,9 +960,9 @@ func TestSyncForwarder_RetryBudgetExhausted(t *testing.T) {
 		"intake should have received at least one request before budget was exhausted")
 }
 
-// TestSyncForwarder_RetryConfig_Respected verifies that a RetryConfig with
-// a very short MaxElapsedTime is honoured: the exporter gives up faster than
-// a test with a long budget and the error surfaces promptly.
+// TestSyncForwarder_RetryConfig_Respected verifies that a RetryConfig with a
+// short MaxElapsedTime is honoured: the exporter gives up faster than one with
+// a longer budget.
 func TestSyncForwarder_RetryConfig_Respected(t *testing.T) {
 	restore := setSyncForwarderGate(t, true)
 	defer restore()
@@ -974,8 +970,6 @@ func TestSyncForwarder_RetryConfig_Respected(t *testing.T) {
 	intake := newFakeIntake(http.StatusInternalServerError)
 	defer intake.Close()
 
-	// Two exporters with different retry budgets; both should fail, but the
-	// short-budget one should make fewer intake requests.
 	cfgShort := retryExporterConfig(t, intake.URL)
 	cfgShort.RetryConfig.MaxElapsedTime = 50 * time.Millisecond
 
@@ -1001,4 +995,97 @@ func TestSyncForwarder_RetryConfig_Respected(t *testing.T) {
 	require.Greater(t, reqsAfterLong, reqsAfterShort,
 		"longer retry budget should produce more intake requests (short=%d, long=%d)",
 		reqsAfterShort, reqsAfterLong-reqsAfterShort)
+}
+
+// TestDefaultForwarder_SwallowsErrors documents the legacy behavior the
+// feature gate exists to fix: with the gate off, intake 5xx is hidden from
+// ConsumeMetrics. If this test ever starts failing, the legacy path has
+// converged with the sync path and the feature gate can be retired.
+func TestDefaultForwarder_SwallowsErrors(t *testing.T) {
+	restore := setSyncForwarderGate(t, false)
+	defer restore()
+
+	intake := newFakeIntake(http.StatusInternalServerError)
+	defer intake.Close()
+
+	cfg := benchExporterConfig(t, intake.URL)
+	exp := buildBenchExporter(t, cfg)
+	defer func() { _ = exp.Shutdown(context.Background()) }()
+
+	mc, ok := exp.(metricsConsumer)
+	require.True(t, ok)
+
+	// Default async forwarder enqueues the payload and returns nil immediately.
+	require.NoError(t, mc.ConsumeMetrics(context.Background(), makeGaugeMetrics(50)))
+}
+
+// initSyncSerializerForTest creates a serializer backed by OTelSyncForwarder
+// via a mini-Fx app. This simulates the DDOT production path where
+// cmd/otel-agent/subcommands/run/command.go injects OTelSyncForwarder into the
+// shared serializer (OTAGENT-1024). Not for use outside of tests.
+func initSyncSerializerForTest(logger *zap.Logger, cfg *ExporterConfig, sourceProvider source.Provider, httpClient *http.Client) (*serializer.Serializer, *defaultforwarder.OTelSyncForwarder, error) {
+	var f defaultforwarder.Forwarder
+	var s *serializer.Serializer
+
+	opts := []fx.Option{
+		fx.WithLogger(func(log *zap.Logger) fxevent.Logger {
+			return &fxevent.ZapLogger{Logger: log}
+		}),
+		fx.Supply(logger),
+		fxutil.FxAgentBase(),
+		fx.Provide(func() coreconfig.Component {
+			pkgconfig := create.NewConfig("DD", "")
+			pkgconfigsetup.InitConfig(pkgconfig)
+			pkgconfig.BuildSchema()
+			pkgconfig.Set("api_key", string(cfg.API.Key), pkgconfigmodel.SourceFile)
+			pkgconfig.Set("site", cfg.API.Site, pkgconfigmodel.SourceFile)
+			if cfg.Metrics.Metrics.TCPAddrConfig.Endpoint != "" {
+				pkgconfig.Set("dd_url", cfg.Metrics.Metrics.TCPAddrConfig.Endpoint, pkgconfigmodel.SourceDefault)
+			}
+			setupSerializer(pkgconfig, cfg)
+			setupForwarder(pkgconfig)
+			pkgconfig.Set("skip_ssl_validation", cfg.ClientConfig.InsecureSkipVerify, pkgconfigmodel.SourceFile)
+			pkgconfig.Set("logging_frequency", int64(0), pkgconfigmodel.SourceAgentRuntime)
+			return pkgconfig
+		}),
+		fx.Provide(func(log *zap.Logger) (logdef.Component, error) {
+			zp := &datadog.Zaplogger{Logger: log}
+			return zp, nil
+		}),
+		fx.Provide(func() string {
+			s, err := sourceProvider.Source(context.TODO())
+			if err != nil {
+				return ""
+			}
+			return s.Identifier
+		}),
+		fx.Provide(newOrchestratorinterfaceimpl),
+		fx.Provide(serializer.NewSerializer),
+		metricscompressionfx.Module(),
+		fx.Provide(func(c metricscompression.Component) compression.Compressor {
+			return c
+		}),
+		fx.Provide(func() secrets.Component { return &secretnooptypes.SecretNoop{} }),
+		delegatedauthnoopfx.Module(),
+		fx.Populate(&f),
+		fx.Populate(&s),
+		fx.Provide(func(c coreconfig.Component, l logdef.Component, sec secrets.Component) (defaultforwarder.Forwarder, error) {
+			eds, err := configutils.GetMultipleEndpoints(c)
+			if err != nil {
+				return nil, err
+			}
+			return defaultforwarder.NewOTelSyncForwarder(c, l, sec, eds, httpClient)
+		}),
+	}
+
+	app := fx.New(opts...)
+	if err := app.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	sf, ok := f.(*defaultforwarder.OTelSyncForwarder)
+	if !ok {
+		return nil, nil, errors.New("failed to cast forwarder to *defaultforwarder.OTelSyncForwarder")
+	}
+	return s, sf, nil
 }

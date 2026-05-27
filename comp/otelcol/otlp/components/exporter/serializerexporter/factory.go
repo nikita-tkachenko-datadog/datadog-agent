@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"sync"
 	"time"
 
@@ -217,36 +216,17 @@ func (f *factory) createMetricExporter(ctx context.Context, params exp.Settings,
 	}
 	var ownedForwarder stoppableForwarder
 	if f.s == nil {
-		// Agent OTLP ingestion runs inside the agent binary and shares the agent's
-		// forwarder configuration; users can tune the forwarder directly via
-		// agent config, and the OTel exporter metrics path isn't surfaced in
-		// that mode anyway, so the sync forwarder fix from OTAGENT-1024 doesn't
-		// apply. Keep the legacy async forwarder there.
-		//
-		// DDOT: when UseSyncForwarder is enabled the datadogexporter passes nil
-		// here instead of the agent's shared serializer, causing createMetricExporter
-		// to build a dedicated sync serializer from ExporterConfig (OTAGENT-1024).
-		useSync := useSyncForwarderGate.IsEnabled() && f.ipath != agentOTLPIngest
-		var httpClient *http.Client
-		if useSync {
-			// Build the HTTP client from the user's HTTPConfig so OTel-native
-			// settings (timeout, headers, conn limits, HTTP/2, TLS, proxy) are
-			// honored. Auth and middleware extensions are intentionally not
-			// supported here — Datadog auth is the API key, not OTel auth.
-			// Pass nil extensions: Datadog uses API-key auth (handled by the
-			// forwarder's resolver), so OTel auth/middleware extensions don't apply.
-			httpClient, err = cfg.HTTPConfig.ToClient(ctx, nil, params.TelemetrySettings)
-			if err != nil {
-				return nil, fmt.Errorf("build http client from HTTPConfig: %w", err)
-			}
-		}
+		// f.s is nil only for the OSS Datadog exporter (opentelemetry-collector-contrib),
+		// which owns its own serializer lifecycle. DDOT and Agent OTLP ingestion always
+		// inject a non-nil serializer from their Fx graphs, so this block is never
+		// reached in those paths.
 		var fw stoppableForwarder
-		f.s, fw, err = initSerializerInternal(params.Logger, cfg, f.hostProvider, useSync, httpClient)
+		f.s, fw, err = initSerializerInternal(params.Logger, cfg, f.hostProvider)
 		if err != nil {
 			return nil, err
 		}
 		ownedForwarder = fw
-		params.Logger.Info("starting forwarder", zap.Bool("sync", useSync))
+		params.Logger.Info("starting forwarder")
 		if err := fw.Start(); err != nil {
 			params.Logger.Error("failed to start forwarder", zap.Error(err))
 		}

@@ -29,7 +29,10 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	"github.com/DataDog/datadog-agent/pkg/serializer"
 	"github.com/DataDog/datadog-agent/pkg/util/otel"
+
+	"go.uber.org/zap"
 )
 
 // fakeIntake is an httptest.Server that accepts requests and tracks volume.
@@ -145,14 +148,24 @@ func setSyncForwarderGate(t testing.TB, enabled bool) func() {
 	}
 }
 
-// buildBenchExporter builds an exporter wired to a fake intake. Uses the DDOT
-// factory so the UseSyncForwarder gate actually takes effect — the
-// agentOTLPIngest path intentionally bypasses sync mode (see factory.go).
+// buildBenchExporter builds an exporter wired to a fake intake. When the
+// UseSyncForwarder gate is on, it simulates the DDOT production path by
+// injecting an OTelSyncForwarder into the shared serializer before calling the
+// factory, mirroring cmd/otel-agent/subcommands/run/command.go (OTAGENT-1024).
 // The caller is responsible for flipping the feature gate before invoking.
 func buildBenchExporter(t testing.TB, cfg *ExporterConfig) component.Component {
 	t.Helper()
 	hostGetter := SourceProviderFunc(func(context.Context) (string, error) { return "bench-host", nil })
-	f := NewFactoryForOTelAgent(nil, hostGetter, nil, otel.NewDisabledGatewayUsage(), TelemetryStore{}, nil)
+
+	var injectedSerializer serializer.MetricSerializer
+	if useSyncForwarderGate.IsEnabled() {
+		httpClient := &http.Client{Timeout: cfg.HTTPConfig.Timeout}
+		ser, _, err := initSyncSerializerForTest(zap.NewNop(), cfg, hostGetter, httpClient)
+		require.NoError(t, err)
+		injectedSerializer = ser
+	}
+
+	f := NewFactoryForOTelAgent(injectedSerializer, hostGetter, nil, otel.NewDisabledGatewayUsage(), TelemetryStore{}, nil)
 
 	exp, err := f.CreateMetrics(
 		context.Background(),

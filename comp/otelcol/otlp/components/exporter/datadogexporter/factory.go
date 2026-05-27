@@ -215,16 +215,7 @@ func (f *factory) createMetricsExporter(
 	ctx, cancel := context.WithCancel(ctx) // cancel() runs on shutdown
 	f.consumeStatsPayload(ctx, &wg, statsIn, statsv, fmt.Sprintf("datadogexporter-%s-%s", set.BuildInfo.Command, set.BuildInfo.Version), set.Logger)
 
-	// When UseSyncForwarder is enabled, pass nil so the serializerexporter builds
-	// its own dedicated sync serializer from ExporterConfig (which carries the API
-	// key). This lets HTTP errors propagate back through ConsumeMetrics to the
-	// OTel exporterhelper queue/retry layer (OTAGENT-1024). When the gate is off,
-	// pass the shared agent serializer for legacy async behavior.
-	injectedSerializer := f.s
-	if serializerexporter.IsSyncForwarderEnabled() {
-		injectedSerializer = nil
-	}
-	sf := serializerexporter.NewFactoryForOTelAgent(injectedSerializer, f.h, statsIn, f.gatewayUsage, f.store, f.reporter)
+	sf := serializerexporter.NewFactoryForOTelAgent(f.s, f.h, statsIn, f.gatewayUsage, f.store, f.reporter)
 	ex := buildMetricsExporterConfig(cfg, func(context.Context) error {
 		cancel()  // first cancel context
 		wg.Wait() // then wait for shutdown
