@@ -20,6 +20,7 @@ import (
 
 	datadogconfig "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/datadog/config"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/exporter"
@@ -73,12 +74,17 @@ func newDefaultConfig() component.Config {
 	retry.MaxInterval = legacyForwarderBackoffMax
 	retry.MaxElapsedTime = legacyForwarderRetryMaxElapsed
 
+	httpCfg := confighttp.NewDefaultClientConfig()
+	// 20s matches legacyForwarderTimeout. TimeoutConfig controls the
+	// exporterhelper per-call deadline; HTTPConfig.Timeout controls the
+	// underlying http.Client, which is what actually bounds the TCP round-trip
+	// when the sync forwarder is in use (sendHTTPTransactions does not
+	// propagate the caller context to t.Process).
+	httpCfg.Timeout = legacyForwarderTimeout
+
 	return &ExporterConfig{
-		// 20s per request matches the legacy forwarder_timeout. Was previously
-		// 0 because ConsumeMetrics returned immediately under the async
-		// forwarder; with the sync forwarder ConsumeMetrics now drives the HTTP
-		// round-trip, so a real timeout is required.
 		TimeoutConfig:    exporterhelper.TimeoutConfig{Timeout: legacyForwarderTimeout},
+		HTTPConfig:       httpCfg,
 		QueueBatchConfig: configoptional.Some(queue),
 		RetryConfig:      retry,
 
