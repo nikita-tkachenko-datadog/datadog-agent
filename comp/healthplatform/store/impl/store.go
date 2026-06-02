@@ -339,6 +339,7 @@ func (h *healthPlatformImpl) ReportIssue(issue *healthplatform.Issue) error {
 	return nil
 }
 
+
 // ============================================================================
 // Query Methods
 // ============================================================================
