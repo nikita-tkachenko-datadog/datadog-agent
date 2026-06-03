@@ -9,6 +9,7 @@ package setup
 import (
 	"os"
 	"runtime"
+	"sync"
 
 	pkgconfigenv "github.com/DataDog/datadog-agent/pkg/config/env"
 	pkgconfigmodel "github.com/DataDog/datadog-agent/pkg/config/model"
@@ -65,13 +66,27 @@ func fixupLogsAgent(config pkgconfigmodel.Config) {
 	}
 }
 
+// setupProcesses is meant to be called multiple times for different configs, but overrides apply to all configs, so
+// we need to make sure it is only applied once
+var processesAddOverrideOnce sync.Once
+
 // always called, for both full-agent and serverless-init, after declaring settings
 func fixupInitCommonConfigComponents(config pkgconfigmodel.Config) {
+	// container syspath
 	fixupContainerSyspath(config)
+
+	// logs-agent
 	fixupLogsAgent(config)
+
+	// misc.
 	pkgconfigmodel.AddOverrideFunc(toggleDefaultPayloads)
 	pkgconfigmodel.AddOverrideFunc(applyInfrastructureModeOverrides)
 	pkgconfigmodel.AddOverrideFunc(ApplyUseDogstatsdSuppression)
+
+	// processes
+	processesAddOverrideOnce.Do(func() {
+		pkgconfigmodel.AddOverrideFunc(loadProcessTransforms)
+	})
 }
 
 // called only for full-agent, NOT serverless-init, after declaring settings
