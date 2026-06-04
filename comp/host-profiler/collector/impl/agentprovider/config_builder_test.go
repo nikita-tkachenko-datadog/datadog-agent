@@ -62,7 +62,7 @@ func TestBuildExportersNoAdditionalHTTPHeaders(t *testing.T) {
 	require.True(t, ok)
 
 	assert.Equal(t, "test_key", headers["dd-api-key"])
-	assert.Len(t, headers, 3) // dd-api-key, dd-evp-origin, dd-evp-origin-version
+	assert.Len(t, headers, 4) // dd-api-key, dd-evp-origin, dd-evp-origin-version, resource_attributes_as_tags
 }
 
 func TestBuildConfigDDProfilingEnabled(t *testing.T) {

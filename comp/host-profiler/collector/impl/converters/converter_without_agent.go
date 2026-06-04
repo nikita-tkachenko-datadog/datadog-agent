@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/DataDog/datadog-agent/comp/host-profiler/symboluploader/cgroup"
 	"github.com/DataDog/datadog-agent/comp/host-profiler/version"
 	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/xconfmap"
@@ -373,6 +374,9 @@ func (c *converterWithoutAgent) ensureOtlpHTTPExporterConfig(conf confMap, expor
 			if _, err := SetDefault(headers, fieldDDEVPOriginVersion, version.ProfilerVersion); err != nil {
 				return err
 			}
+			if _, err := SetDefault(headers, fieldDDOtelMetricConfig, fieldDDOtelMetricConfigValue); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -546,6 +550,20 @@ func (c *converterWithoutAgent) addInternalHealthMetricsPipeline(conf confMap, p
 	metricsProcessors := []any{reservedFilterProcessor, reservedCumulativeToDeltaProcessor}
 	metricsProcessors = append(metricsProcessors, profilesProcessors...)
 
+	if containerID, err := cgroup.GetSelfContainerID(); err == nil {
+		const containerIDProcessorName = "resource/dd-profiler-metrics-containerid"
+		if err := Set(conf, pathPrefixProcessors+containerIDProcessorName, confMap{
+			"attributes": []any{confMap{
+				"key":    version.OTelContainerIDKey,
+				"value":  containerID,
+				"action": "insert",
+			}},
+		}); err != nil {
+			return fmt.Errorf("failed to add container ID processor: %w", err)
+		}
+		metricsProcessors = append([]any{containerIDProcessorName}, metricsProcessors...)
+	}
+
 	metricsPipeline := confMap{
 		"receivers":  []any{reservedPrometheusReceiver},
 		"processors": metricsProcessors,
@@ -562,3 +580,4 @@ func (c *converterWithoutAgent) addInternalHealthMetricsPipeline(conf confMap, p
 
 	return nil
 }
+
