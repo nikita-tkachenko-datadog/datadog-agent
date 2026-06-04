@@ -20,10 +20,7 @@ const (
 	StandaloneProfilerName = "host-profiler-standalone"
 	OTelProfilerNameKey    = "telemetry.distro.name"
 	OTelProfilerVersionKey = "telemetry.distro.version"
-	OTelContainerIDKey     = "container.id"
+	OTelContainerIDKey = "container.id"
 )
-
-// Container ID attribute key for bundled mode (Datadog convention).
-const DDContainerIDKey = "container_id"
 
 var ProfilerVersion = version.AgentVersion

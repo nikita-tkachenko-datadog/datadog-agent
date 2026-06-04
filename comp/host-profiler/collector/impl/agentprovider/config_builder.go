@@ -174,7 +174,7 @@ func buildMetricsPipeline(conf confMap, enableGoRuntimeMetrics bool, healthMetri
 		const containerIDProcessorName = "resource/dd-profiler-metrics-containerid"
 		processors[containerIDProcessorName] = confMap{
 			"attributes": []any{confMap{
-				"key":    version.DDContainerIDKey,
+				"key":    version.OTelContainerIDKey,
 				"value":  containerID,
 				"action": "insert",
 			}},
