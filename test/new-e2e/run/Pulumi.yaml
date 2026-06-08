@@ -1,0 +1,5 @@
+name: e2elocal
+runtime: go
+description: Demo lab scenario runner
+config:
+  pulumi:disable-default-providers: ["*"]
