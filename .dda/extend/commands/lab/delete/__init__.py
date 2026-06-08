@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import click
@@ -10,6 +11,24 @@ from dda.cli.base import dynamic_command, pass_app
 
 if TYPE_CHECKING:
     from dda.cli.application import Application
+
+_MODULE_PREFIX = "github.com/DataDog/datadog-agent"
+
+
+def _demo_pulumi_dir_fallback() -> str | None:
+    """Return the standard demo Pulumi program directory for backward compatibility.
+
+    Envs created before pulumi_dir was stored in metadata lack that key.
+    We reconstruct the path by walking up to the repo root. Returns None if
+    the repo root cannot be found (e.g. dda installed outside the agent repo).
+    """
+    candidate = Path(__file__).resolve().parent
+    while candidate != candidate.parent:
+        go_mod = candidate / "go.mod"
+        if go_mod.exists() and _MODULE_PREFIX in go_mod.read_text():
+            return str(candidate / "test" / "new-e2e" / "run")
+        candidate = candidate.parent
+    return None
 
 
 @dynamic_command(short_help="Delete a lab environment")
@@ -92,7 +111,33 @@ def cmd(app: Application, *, id: str | None, yes: bool) -> None:
 
         provider.destroy(app, id)
     except ValueError:
-        app.display_warning(f"Provider '{env.env_type}' not found, removing from storage only.")
+        # No registered provider for this env type.  If the environment was
+        # created by a Pulumi-backed command (e.g. dda lab demo), the
+        # pulumi_dir and stack name are stored in metadata — use them to
+        # destroy the stack before removing the local record.
+        stack = env.metadata.get("stack")
+        # pulumi_dir was added to metadata in a later version; fall back to the
+        # known standard path for envs created before that migration.
+        pulumi_dir = env.metadata.get("pulumi_dir") or _demo_pulumi_dir_fallback()
+        if stack and pulumi_dir:
+            import os
+            import subprocess
+
+            app.display_info(f"Destroying Pulumi stack '{stack}' ...")
+            result = subprocess.run(
+                ["pulumi", "destroy", "--yes", "-s", stack, "-C", pulumi_dir],
+                env={**os.environ},
+            )
+            if result.returncode != 0:
+                app.display_warning(f"pulumi destroy exited {result.returncode}; continuing to remove local record.")
+        elif stack and not pulumi_dir:
+            app.display_warning(
+                f"Could not locate the Pulumi program directory for stack '{stack}'. "
+                "The local record will be removed but the Pulumi stack and cloud resources "
+                f"were NOT destroyed. Run: pulumi destroy -s {stack}"
+            )
+        else:
+            app.display_warning(f"Provider '{env.env_type}' not found, removing from storage only.")
 
     try:
         env.delete()
