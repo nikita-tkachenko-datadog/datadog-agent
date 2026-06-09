@@ -3,25 +3,35 @@
   rules:
     - when: on_success
 
-bazel:test:linux-amd64:
-  extends: [ .bazel:test, .bazel:runner:linux-amd64 ]
+# Run twice so we can compare cold-server (run 1) vs warm-server (run 2)
+# loading/analysis phases.  Profiles are saved as artifacts and can be
+# inspected in https://ui.perfetto.dev.
+.bazel:test:unix:
+  extends: .bazel:test
   script:
-    - bazel test --keep_going //...
+    - if [ -d "$XDG_CACHE_HOME/bazel" ]; then du -h -d 3 "$XDG_CACHE_HOME/bazel"; fi
+    - df -h
+    - bazel test --keep_going --profile=bazel-profile-run1.json //...
+    - bazel test --keep_going --profile=bazel-profile-run2.json //...
+    - du -h -d 3 "$XDG_CACHE_HOME/bazel"
+    - df -h
+  artifacts:
+    when: always
+    paths:
+      - bazel-profile-run1.json
+      - bazel-profile-run2.json
+
+bazel:test:linux-amd64:
+  extends: [ .bazel:test:unix, .bazel:runner:linux-amd64 ]
 
 bazel:test:linux-arm64:
-  extends: [ .bazel:test, .bazel:runner:linux-arm64 ]
-  script:
-    - bazel test --keep_going //...
+  extends: [ .bazel:test:unix, .bazel:runner:linux-arm64 ]
 
 bazel:test:macos-amd64:
-  extends: [ .bazel:test, .bazel:runner:macos-amd64 ]
-  script:
-    - bazel test --keep_going //...
+  extends: [ .bazel:test:unix, .bazel:runner:macos-amd64 ]
 
 bazel:test:macos-arm64:
-  extends: [ .bazel:test, .bazel:runner:macos-arm64 ]
-  script:
-    - bazel test --keep_going //...
+  extends: [ .bazel:test:unix, .bazel:runner:macos-arm64 ]
 
 bazel:test:windows-amd64:
   extends: [ .bazel:test, .bazel:runner:windows-amd64 ]
