@@ -127,7 +127,7 @@ func NewDecoderWithFraming(source *sources.ReplaceableSource, parser parsers.Par
 	outputChan := make(chan *message.Message)
 	detectedPattern := &DetectedPattern{}
 
-	tokenizerMaxInputBytes, labelerMaxBytes := resolveTokenizerAndLabelerMaxInputBytes(source.Config().AutoMultiLineOptions, source.Config().ExperimentalAdaptiveSampling, source.Config().ExperimentalNoisyLogDetection, source.UnderlyingSource().Name)
+	tokenizerMaxInputBytes, labelerMaxBytes := resolveTokenizerAndLabelerMaxInputBytes(source.Config().AutoMultiLineOptions, source.Config().ExperimentalAdaptiveSampling, source.Config().ExperimentalNoisyLogDetection, effectiveSourceName(source))
 	tok := preprocessor.NewTokenizer(tokenizerMaxInputBytes)
 	lineHandler := buildLineHandler(source, multiLinePattern, tailerInfo, outputChan, detectedPattern, tok, labelerMaxBytes)
 
@@ -181,6 +181,16 @@ func resolveNoisyLogDetectionEnabled(sourceNoisyLogDetection *bool) bool {
 	}
 
 	return pkgconfigsetup.Datadog().GetBool("logs_config.experimental_noisy_log_detection")
+}
+
+// effectiveSourceName returns the user-facing source tag for matching against disabled_sources.
+// For AD sources, Config.Source is the user-configured `source:` tag (e.g. "nginx"),
+// while LogSource.Name is the integration/provider name (e.g. "docker").
+func effectiveSourceName(source *sources.ReplaceableSource) string {
+	if s := source.Config().Source; s != "" {
+		return s
+	}
+	return source.UnderlyingSource().Name
 }
 
 func isSourceDisabledForSampling(sourceName string) bool {
@@ -318,8 +328,7 @@ func buildLineHandler(source *sources.ReplaceableSource, multiLinePattern *regex
 
 	var sampler preprocessor.Sampler
 	sourceConfig := source.Config()
-	sourceName := source.UnderlyingSource().Name
-	switch resolveSamplerMode(sourceConfig.ExperimentalAdaptiveSampling, sourceConfig.ExperimentalNoisyLogDetection, sourceName) {
+	switch resolveSamplerMode(sourceConfig.ExperimentalAdaptiveSampling, sourceConfig.ExperimentalNoisyLogDetection, effectiveSourceName(source)) {
 	case samplerAdaptiveSampling:
 		sampler = preprocessor.NewAdaptiveSampler(resolveAdaptiveSamplerConfig(sourceConfig.ExperimentalAdaptiveSampling, tok), source.UnderlyingSource().Name)
 	case samplerNoisyLogDetection:
