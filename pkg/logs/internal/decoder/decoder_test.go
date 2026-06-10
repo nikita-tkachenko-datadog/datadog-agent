@@ -351,6 +351,8 @@ func TestResolveTokenizerAndLabelerMaxInputBytes(t *testing.T) {
 		name                  string
 		globalSamplerEnabled  bool
 		globalNoisyDetection  bool
+		globalDisabledSources []string
+		sourceName            string
 		sourceAutoMLSettings  *config.SourceAutoMultiLineOptions
 		sourceSamplerSettings *config.SourceAdaptiveSamplingOptions
 		sourceNoisyDetection  *bool
@@ -450,13 +452,30 @@ func TestResolveTokenizerAndLabelerMaxInputBytes(t *testing.T) {
 			wantTokenizerMax:     60,
 			wantLabelerMax:       60,
 		},
+		{
+			name:                  "disabled source does not widen tokenizer even with global sampler enabled",
+			globalSamplerEnabled:  true,
+			globalDisabledSources: []string{"blocked_source"},
+			sourceName:            "blocked_source",
+			wantTokenizerMax:      60,
+			wantLabelerMax:        60,
+		},
+		{
+			name:                  "non-matching disabled source still widens tokenizer",
+			globalSamplerEnabled:  true,
+			globalDisabledSources: []string{"other_source"},
+			sourceName:            "my_source",
+			wantTokenizerMax:      256,
+			wantLabelerMax:        60,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mockConfig.Set("logs_config.experimental_adaptive_sampling.enabled", tt.globalSamplerEnabled, pkgconfigmodel.SourceAgentRuntime)
 			mockConfig.Set("logs_config.experimental_noisy_log_detection", tt.globalNoisyDetection, pkgconfigmodel.SourceAgentRuntime)
-			gotTokenizerMax, gotLabelerMax := resolveTokenizerAndLabelerMaxInputBytes(tt.sourceAutoMLSettings, tt.sourceSamplerSettings, tt.sourceNoisyDetection)
+			mockConfig.Set("logs_config.experimental_adaptive_sampling.disabled_sources", tt.globalDisabledSources, pkgconfigmodel.SourceAgentRuntime)
+			gotTokenizerMax, gotLabelerMax := resolveTokenizerAndLabelerMaxInputBytes(tt.sourceAutoMLSettings, tt.sourceSamplerSettings, tt.sourceNoisyDetection, tt.sourceName)
 			assert.Equal(t, tt.wantTokenizerMax, gotTokenizerMax)
 			assert.Equal(t, tt.wantLabelerMax, gotLabelerMax)
 		})
@@ -562,6 +581,8 @@ func TestResolveSamplerMode(t *testing.T) {
 		name                  string
 		globalSamplerEnabled  bool
 		globalNoisyDetection  bool
+		globalDisabledSources []string
+		sourceName            string
 		sourceSamplerSettings *config.SourceAdaptiveSamplingOptions
 		sourceNoisyDetection  *bool
 		want                  samplerMode
@@ -602,13 +623,43 @@ func TestResolveSamplerMode(t *testing.T) {
 			sourceNoisyDetection: &enabledTrue,
 			want:                 samplerNoisyLogDetection,
 		},
+		{
+			name:                  "disabled source disables adaptive sampling",
+			globalSamplerEnabled:  true,
+			globalDisabledSources: []string{"blocked_source"},
+			sourceName:            "blocked_source",
+			want:                  samplerDisabled,
+		},
+		{
+			name:                  "disabled source also disables noisy detection",
+			globalSamplerEnabled:  false,
+			globalNoisyDetection:  true,
+			globalDisabledSources: []string{"blocked_source"},
+			sourceName:            "blocked_source",
+			want:                  samplerDisabled,
+		},
+		{
+			name:                  "non-matching disabled source does not affect sampling",
+			globalSamplerEnabled:  true,
+			globalDisabledSources: []string{"other_source"},
+			sourceName:            "my_source",
+			want:                  samplerAdaptiveSampling,
+		},
+		{
+			name:                  "disabled source with multiple entries",
+			globalSamplerEnabled:  true,
+			globalDisabledSources: []string{"source_a", "source_b", "source_c"},
+			sourceName:            "source_b",
+			want:                  samplerDisabled,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mockConfig.Set("logs_config.experimental_adaptive_sampling.enabled", tt.globalSamplerEnabled, pkgconfigmodel.SourceAgentRuntime)
 			mockConfig.Set("logs_config.experimental_noisy_log_detection", tt.globalNoisyDetection, pkgconfigmodel.SourceAgentRuntime)
-			got := resolveSamplerMode(tt.sourceSamplerSettings, tt.sourceNoisyDetection)
+			mockConfig.Set("logs_config.experimental_adaptive_sampling.disabled_sources", tt.globalDisabledSources, pkgconfigmodel.SourceAgentRuntime)
+			got := resolveSamplerMode(tt.sourceSamplerSettings, tt.sourceNoisyDetection, tt.sourceName)
 			assert.Equal(t, tt.want, got)
 		})
 	}
