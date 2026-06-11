@@ -168,16 +168,6 @@ func (t *teeConfig) ParseEnvJSON(key string, varType any) {
 	t.compare.ParseEnvJSON(key, varType)
 }
 
-// IsSet wraps Viper for concurrent access
-func (t *teeConfig) IsSet(key string) bool {
-	base := t.baseline.IsSet(key)
-	compare := t.compare.IsSet(key)
-	if base != compare {
-		t.warnOnce("IsSet", key, "base[%s]: %v | compare[%s]: %v | from %s", t.baseline.GetSource(key), base, t.compare.GetSource(key), compare, getLocation(1))
-	}
-	return base
-}
-
 // IsConfigured returns true if a settings is configured by the user (ie: the value doesn't comes from the defaults)
 func (t *teeConfig) IsConfigured(key string) bool {
 	base := t.baseline.IsConfigured(key)
@@ -420,12 +410,6 @@ func (t *teeConfig) GetSource(key string) model.Source {
 func (t *teeConfig) SetEnvPrefix(in string) {
 	t.baseline.SetEnvPrefix(in)
 	t.compare.SetEnvPrefix(in)
-}
-
-// BindEnv wraps Viper for concurrent access, and adds tracking of the configurable env vars
-func (t *teeConfig) BindEnv(key string, envvars ...string) {
-	t.baseline.BindEnv(key, envvars...) //nolint:forbidigo // TODO: replace by 'SetDefaultAndBindEnv'
-	t.compare.BindEnv(key, envvars...)  //nolint:forbidigo // TODO: replace by 'SetDefaultAndBindEnv'
 }
 
 // SetEnvKeyReplacer wraps Viper for concurrent access

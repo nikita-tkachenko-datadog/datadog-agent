@@ -37,7 +37,7 @@ import (
 	"github.com/DataDog/datadog-agent/comp/core"
 	autodiscovery "github.com/DataDog/datadog-agent/comp/core/autodiscovery/def"
 	adfx "github.com/DataDog/datadog-agent/comp/core/autodiscovery/fx"
-	"github.com/DataDog/datadog-agent/comp/core/autodiscovery/impl"
+	autodiscoveryimpl "github.com/DataDog/datadog-agent/comp/core/autodiscovery/impl"
 	"github.com/DataDog/datadog-agent/comp/core/autodiscovery/integration"
 	"github.com/DataDog/datadog-agent/comp/core/autodiscovery/providers"
 	"github.com/DataDog/datadog-agent/comp/core/config"
@@ -283,13 +283,8 @@ func run(
 	previousIntegrationTracing := false
 	previousIntegrationTracingExhaustive := false
 	if cliParams.generateIntegrationTraces {
-		if pkgconfigsetup.Datadog().IsSet("integration_tracing") {
-			previousIntegrationTracing = pkgconfigsetup.Datadog().GetBool("integration_tracing")
-
-		}
-		if pkgconfigsetup.Datadog().IsSet("integration_tracing_exhaustive") {
-			previousIntegrationTracingExhaustive = pkgconfigsetup.Datadog().GetBool("integration_tracing_exhaustive")
-		}
+		previousIntegrationTracing = pkgconfigsetup.Datadog().GetBool("integration_tracing")
+		previousIntegrationTracingExhaustive = pkgconfigsetup.Datadog().GetBool("integration_tracing_exhaustive")
 		pkgconfigsetup.Datadog().Set("integration_tracing", true, model.SourceAgentRuntime)
 		pkgconfigsetup.Datadog().Set("integration_tracing_exhaustive", true, model.SourceAgentRuntime)
 	}
