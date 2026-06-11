@@ -178,15 +178,17 @@ func withIntakeHostname(url pulumi.StringInput, shouldSkipSSLValidation pulumi.B
 	return func(p *Params) error {
 		p.intakeURL = url
 		envVars := pulumi.Map{
-			"DD_DD_URL":                                  pulumi.Sprintf("%s", url),
-			"DD_PROCESS_CONFIG_PROCESS_DD_URL":           pulumi.Sprintf("%s", url),
-			"DD_APM_DD_URL":                              pulumi.Sprintf("%s", url),
-			"DD_SKIP_SSL_VALIDATION":                     shouldSkipSSLValidation,
-			"DD_REMOTE_CONFIGURATION_NO_TLS_VALIDATION":  shouldSkipSSLValidation,
-			"DD_LOGS_CONFIG_FORCE_USE_HTTP":              pulumi.Bool(true), // Force the use of HTTP/HTTPS rather than switching to TCP
-			"DD_LOGS_CONFIG_LOGS_DD_URL":                 pulumi.Sprintf("%s", url),
-			"DD_LOGS_CONFIG_LOGS_NO_SSL":                 shouldSkipSSLValidation,
-			"DD_SERVICE_DISCOVERY_FORWARDER_LOGS_DD_URL": pulumi.Sprintf("%s", url),
+			"DD_DD_URL":                                       pulumi.Sprintf("%s", url),
+			"DD_PROCESS_CONFIG_PROCESS_DD_URL":                pulumi.Sprintf("%s", url),
+			"DD_APM_DD_URL":                                   pulumi.Sprintf("%s", url),
+			"DD_SKIP_SSL_VALIDATION":                          shouldSkipSSLValidation,
+			"DD_REMOTE_CONFIGURATION_NO_TLS_VALIDATION":       shouldSkipSSLValidation,
+			"DD_LOGS_CONFIG_FORCE_USE_HTTP":                   pulumi.Bool(true), // Force the use of HTTP/HTTPS rather than switching to TCP
+			"DD_LOGS_CONFIG_LOGS_DD_URL":                      pulumi.Sprintf("%s", url),
+			"DD_LOGS_CONFIG_LOGS_NO_SSL":                      shouldSkipSSLValidation,
+			"DD_SERVICE_DISCOVERY_FORWARDER_LOGS_DD_URL":      pulumi.Sprintf("%s", url),
+			"DD_CONFIG_FILES_DISCOVERY_FORWARDER_LOGS_DD_URL": pulumi.Sprintf("%s", url),
+			"DD_CONFIG_FILES_DISCOVERY_FORWARDER_LOGS_NO_SSL": shouldSkipSSLValidation,
 		}
 		for key, value := range envVars {
 			if err := WithAgentServiceEnvVariable(key, value)(p); err != nil {

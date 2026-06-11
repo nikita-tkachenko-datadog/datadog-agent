@@ -66,7 +66,7 @@ type Params struct {
 
 	// intakeURL is set by withIntakeHostname so WithV3MetricsEnabled can inject V3 endpoint
 	// config without recomposing the URL from its parts.
-	intakeURL      *pulumi.StringOutput
+	intakeURL *pulumi.StringOutput
 }
 
 type Option = func(*Params) error
@@ -310,6 +310,8 @@ sbom.logs_dd_url: %[1]s:%[2]d
 sbom.logs_no_ssl: true
 service_discovery.forwarder.logs_dd_url: %[1]s:%[2]d
 service_discovery.forwarder.logs_no_ssl: true
+config_files_discovery.forwarder.logs_dd_url: %[1]s:%[2]d
+config_files_discovery.forwarder.logs_no_ssl: true
 software_inventory.forwarder.logs_dd_url: %[1]s:%[2]d
 software_inventory.forwarder.logs_no_ssl: true
 data_streams.forwarder.logs_dd_url: %[1]s:%[2]d
@@ -417,4 +419,3 @@ func WithV3MetricsEnabled() func(*Params) error {
 		return nil
 	}
 }
-
