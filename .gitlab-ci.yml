@@ -22,7 +22,7 @@
   if: $DEPLOY_AGENT == "true" || $DDR_WORKFLOW_ID != null
 
 # Windows-specific Go source files, pkg/, and cmd/ (27 paths), need to be splitted because Gitlab has a limit to 50 paths in a single rule
-.windows_path: &windows_path 
+.windows_path: &windows_path
   # Windows-specific Go source files (by filename convention)
   - "**/*_windows.go"
 
@@ -1515,6 +1515,17 @@ workflow:
       paths:
         - test/new-e2e/tests/autoscaling/**/*
         - pkg/clusteragent/autoscaling/cluster/**/*
+      compare_to: $COMPARE_TO_BRANCH
+
+.on_instrumentation_or_e2e_changes:
+  - !reference [.on_e2e_main_release_or_rc]
+  - changes:
+      paths:
+        - test/new-e2e/tests/instrumentation/**/*
+        - pkg/clusteragent/instrumentation/**/*
+        - pkg/clusteragent/admission/validate/datadoginstrumentation/*
+        - comp/core/autodiscovery/providers/instrumentationchecks.go
+        - cmd/cluster-agent/api/v1/instrumentationchecks.go
       compare_to: $COMPARE_TO_BRANCH
 
 .on_gpu_integration_tests:
