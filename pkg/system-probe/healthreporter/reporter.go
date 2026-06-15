@@ -1,0 +1,134 @@
+// Unless explicitly stated otherwise all files in this repository are licensed
+// under the Apache License Version 2.0.
+// This product includes software developed at Datadog (https://www.datadoghq.com/).
+// Copyright 2025-present Datadog, Inc.
+
+// Package healthreporter provides a reusable gRPC client for system-probe modules
+// to report and resolve health issues via the core agent's AgentSecure endpoint.
+// Any module that detects a runtime failure can instantiate a Reporter and call
+// ReportWithRetry / ResolveWithRetry without duplicating connection or retry logic.
+package healthreporter
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"google.golang.org/grpc"
+
+	healthplatformpayload "github.com/DataDog/agent-payload/v5/healthplatform"
+	ipcdef "github.com/DataDog/datadog-agent/comp/core/ipc/def"
+	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
+	pb "github.com/DataDog/datadog-agent/pkg/proto/pbgo/core"
+	ddgrpc "github.com/DataDog/datadog-agent/pkg/util/grpc"
+	"github.com/DataDog/datadog-agent/pkg/util/log"
+)
+
+const (
+	// DefaultCallTimeout caps a single gRPC call attempt.
+	DefaultCallTimeout = 5 * time.Second
+	// DefaultMaxWait is how long ReportWithRetry / ResolveWithRetry keep retrying.
+	// Long enough to cover the common case where system-probe starts before the
+	// core agent gRPC server is ready.
+	DefaultMaxWait = 3 * time.Minute
+)
+
+// Reporter sends health issues and resolutions to the core agent via the
+// AgentSecure ReportHealthIssue / ResolveHealthIssue gRPC endpoints.
+type Reporter struct {
+	ipc         ipcdef.Component
+	callTimeout time.Duration
+	maxWait     time.Duration
+}
+
+// New returns a Reporter that uses the given IPC component for mTLS and auth.
+func New(ipc ipcdef.Component) *Reporter {
+	return &Reporter{
+		ipc:         ipc,
+		callTimeout: DefaultCallTimeout,
+		maxWait:     DefaultMaxWait,
+	}
+}
+
+// ReportWithRetry attempts to send issue to the core agent synchronously first.
+// If the first attempt fails (e.g. core agent not yet up), it continues retrying
+// in a background goroutine with exponential backoff for up to DefaultMaxWait.
+// The synchronous first attempt is critical when the calling module factory is about
+// to return an error that causes system-probe to exit: a pure background goroutine
+// would be killed before it could report anything.
+func (r *Reporter) ReportWithRetry(issue *healthplatformpayload.Issue) {
+	if err := r.Report(context.Background(), issue); err == nil {
+		return
+	}
+	go r.retryWithBackoff("report "+issue.GetId(), func() error {
+		return r.Report(context.Background(), issue)
+	})
+}
+
+// ResolveWithRetry clears issueID on the core agent in a background goroutine,
+// retrying with exponential backoff until the call succeeds or DefaultMaxWait elapses.
+func (r *Reporter) ResolveWithRetry(issueID string) {
+	go r.retryWithBackoff("resolve "+issueID, func() error {
+		return r.Resolve(context.Background(), issueID)
+	})
+}
+
+// Report sends a single ReportHealthIssue RPC. The caller is responsible for
+// any retry / timeout policy.
+func (r *Reporter) Report(ctx context.Context, issue *healthplatformpayload.Issue) error {
+	client, err := r.newClient()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, r.callTimeout)
+	defer cancel()
+	_, err = client.ReportHealthIssue(ctx, &pb.ReportHealthIssueRequest{Issue: issue})
+	return err
+}
+
+// Resolve sends a single ResolveHealthIssue RPC. The caller is responsible for
+// any retry / timeout policy.
+func (r *Reporter) Resolve(ctx context.Context, issueID string) error {
+	client, err := r.newClient()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, r.callTimeout)
+	defer cancel()
+	_, err = client.ResolveHealthIssue(ctx, &pb.ResolveHealthIssueRequest{IssueId: issueID})
+	return err
+}
+
+func (r *Reporter) newClient() (pb.AgentSecureClient, error) {
+	ipcAddress, err := pkgconfigsetup.GetIPCAddress(pkgconfigsetup.Datadog())
+	if err != nil {
+		return nil, fmt.Errorf("get IPC address: %w", err)
+	}
+	return ddgrpc.GetDDAgentSecureClient(
+		context.Background(),
+		ipcAddress,
+		pkgconfigsetup.GetIPCPort(),
+		r.ipc.GetTLSClientConfig().Clone(),
+		grpc.WithPerRPCCredentials(ddgrpc.NewBearerTokenAuth(r.ipc.GetAuthToken())),
+	)
+}
+
+func (r *Reporter) retryWithBackoff(op string, fn func() error) {
+	deadline := time.Now().Add(r.maxWait)
+	backoff := 2 * time.Second
+	for {
+		err := fn()
+		if err == nil {
+			return
+		}
+		log.Warnf("health platform: %s failed (will retry in %s): %v", op, backoff, err)
+		if time.Now().After(deadline) {
+			log.Warnf("health platform: gave up on %s after %s", op, r.maxWait)
+			return
+		}
+		time.Sleep(backoff)
+		if backoff < 30*time.Second {
+			backoff *= 2
+		}
+	}
+}

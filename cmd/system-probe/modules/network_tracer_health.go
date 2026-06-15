@@ -1,0 +1,138 @@
+// Unless explicitly stated otherwise all files in this repository are licensed
+// under the Apache License Version 2.0.
+// This product includes software developed at Datadog (https://www.datadoghq.com/).
+// Copyright 2025-present Datadog, Inc.
+
+//go:build (linux && linux_bpf) || (windows && npm) || darwin
+
+package modules
+
+import (
+	"errors"
+	"strconv"
+
+	healthplatformpayload "github.com/DataDog/agent-payload/v5/healthplatform"
+	"github.com/DataDog/datadog-agent/pkg/system-probe/api/module"
+	"github.com/DataDog/datadog-agent/pkg/system-probe/healthreporter"
+	"google.golang.org/protobuf/types/known/structpb"
+)
+
+func stringStruct(fields map[string]string) *structpb.Struct {
+	pb := make(map[string]*structpb.Value, len(fields))
+	for k, v := range fields {
+		pb[k] = structpb.NewStringValue(v)
+	}
+	return &structpb.Struct{Fields: pb}
+}
+
+const (
+	networkProbeIssueID   = "network-probe-init-failure"
+	networkProbeIssueName = "network_probe_init_failure"
+)
+
+// reportNetworkProbeInitFailure sends a fully-built health issue to the core agent.
+// system-probe owns the issue metadata so it does not rely on the core agent's
+// template registry.
+func reportNetworkProbeInitFailure(deps module.FactoryDependencies, initErr error, npmEnabled, usmEnabled bool) {
+	healthreporter.New(deps.Ipc).ReportWithRetry(buildNetworkProbeIssue(initErr, npmEnabled, usmEnabled))
+}
+
+// resolveNetworkProbeInitFailure clears a previously reported network probe failure.
+// Called on successful initialization to clean up stale issues from prior failed runs.
+func resolveNetworkProbeInitFailure(deps module.FactoryDependencies) {
+	healthreporter.New(deps.Ipc).ResolveWithRetry(networkProbeIssueID)
+}
+
+func buildNetworkProbeIssue(initErr error, npmEnabled, usmEnabled bool) *healthplatformpayload.Issue {
+	errStr := "unknown error"
+	if initErr != nil {
+		errStr = initErr.Error()
+	}
+
+	var which string
+	switch {
+	case npmEnabled && usmEnabled:
+		which = "CNM and USM"
+	case npmEnabled:
+		which = "CNM"
+	case usmEnabled:
+		which = "USM"
+	default:
+		which = "network monitoring"
+	}
+
+	extra := stringStruct(map[string]string{
+		"error":       errStr,
+		"npm_enabled": strconv.FormatBool(npmEnabled),
+		"usm_enabled": strconv.FormatBool(usmEnabled),
+	})
+
+	return &healthplatformpayload.Issue{
+		Id:          networkProbeIssueID,
+		IssueName:   networkProbeIssueName,
+		Title:       which + " eBPF Probe Failed to Initialize",
+		Description: which + " is enabled but the eBPF network probe failed to load: " + errStr,
+		Category:    "runtime",
+		Location:    "system-probe",
+		Severity:    healthplatformpayload.IssueSeverity_ISSUE_SEVERITY_HIGH,
+		Source:      "system-probe",
+		Extra:       extra,
+		Tags:        []string{"system-probe", "npm", "usm", "ebpf", "network-monitoring"},
+		Remediation: networkProbeRemediation(initErr),
+	}
+}
+
+func networkProbeRemediation(initErr error) *healthplatformpayload.Remediation {
+	logStep := &healthplatformpayload.RemediationStep{
+		Order: 1, Text: "Check system-probe logs: journalctl -u datadog-agent-sysprobe or /var/log/datadog/system-probe.log",
+	}
+	restartStep := &healthplatformpayload.RemediationStep{
+		Order: 99, Text: "Restart after fixing: systemctl restart datadog-agent-sysprobe",
+	}
+
+	switch {
+	case errors.Is(initErr, errNetworkProbeKernelUnsupported):
+		return &healthplatformpayload.Remediation{
+			Summary: "The running kernel does not meet the minimum version requirements for this feature.",
+			Steps: []*healthplatformpayload.RemediationStep{
+				logStep,
+				{Order: 2, Text: "Check the kernel version: uname -r (NPM requires >= 4.4, USM requires >= 4.14)"},
+				{Order: 3, Text: "Upgrade the host kernel or disable the unsupported feature in datadog.yaml"},
+				restartStep,
+			},
+		}
+	case errors.Is(initErr, errNetworkProbeVerifierRejected):
+		return &healthplatformpayload.Remediation{
+			Summary: "The eBPF verifier rejected a network probe program. The full verifier log is in system-probe logs.",
+			Steps: []*healthplatformpayload.RemediationStep{
+				logStep,
+				{Order: 2, Text: "Search logs for 'verifier' to find the rejected program and the verifier output"},
+				{Order: 3, Text: "Check BTF availability for CO-RE probes: ls /sys/kernel/btf/vmlinux"},
+				{Order: 4, Text: "If in a container, ensure privileged mode or a permissive seccomp profile"},
+				restartStep,
+			},
+		}
+	case errors.Is(initErr, errNetworkProbeUSMUnsupported):
+		return &healthplatformpayload.Remediation{
+			Summary: "Universal Service Monitoring (USM) requires a newer kernel than the one running.",
+			Steps: []*healthplatformpayload.RemediationStep{
+				logStep,
+				{Order: 2, Text: "Check the kernel version: uname -r (USM requires >= 4.14)"},
+				{Order: 3, Text: "Upgrade the host kernel or disable USM (service_monitoring_config.enabled: false) in datadog.yaml"},
+				restartStep,
+			},
+		}
+	default:
+		return &healthplatformpayload.Remediation{
+			Summary: "Check kernel compatibility and system-probe capabilities, then restart system-probe.",
+			Steps: []*healthplatformpayload.RemediationStep{
+				logStep,
+				{Order: 2, Text: "Verify kernel version (>= 4.4 for NPM, >= 4.14 for USM): uname -r"},
+				{Order: 3, Text: "Check BTF availability for CO-RE probes: ls /sys/kernel/btf/vmlinux"},
+				{Order: 4, Text: "Verify required capabilities are granted (check system-probe logs for specific capability errors)"},
+				{Order: 5, Text: "If in a container, ensure privileged mode or a permissive seccomp profile"},
+				restartStep,
+			},
+		}
+	}
+}
