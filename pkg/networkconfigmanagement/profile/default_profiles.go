@@ -87,7 +87,7 @@ var DefaultProfiles = Map{
 	"aosw": {
 		Name: "aosw",
 		Commands: CommandSet{
-			Verify:     MkCommand("show version", `(Alcatel-Lucent Operating System-Wireless|AOS-W)`),
+			Verify:     MkCommand("show version", `(Alcatel-Lucent Operating System-Wireless|AOS-W|AOS-10)`),
 			GetRunning: MkCommand("show running-config", `Building Configuration...`),
 			GetVersion: MkCommand("show version"),
 		},
