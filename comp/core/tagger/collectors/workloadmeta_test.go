@@ -1655,6 +1655,7 @@ func TestHandleKubeKueueWorkload(t *testing.T) {
 			EntityMeta: workloadmeta.EntityMeta{
 				Name:      "job-sample",
 				Namespace: "default",
+				UID:       "uid-job-sample",
 			},
 			QueueName:        "batch",
 			ClusterQueueName: "cluster-batch",
@@ -1664,15 +1665,17 @@ func TestHandleKubeKueueWorkload(t *testing.T) {
 
 	expected := []*types.TagInfo{
 		{
-			Source:               kueueWorkloadSource,
-			EntityID:             types.NewEntityID(types.KueueWorkload, workloadID.ID),
-			IsComplete:           true,
-			HighCardTags:         []string{},
-			OrchestratorCardTags: []string{},
+			Source:       kueueWorkloadSource,
+			EntityID:     types.NewEntityID(types.KueueWorkload, workloadID.ID),
+			IsComplete:   true,
+			HighCardTags: []string{},
+			OrchestratorCardTags: []string{
+				"kueue_workload:job-sample",
+				"kueue_workload_uid:uid-job-sample",
+			},
 			LowCardTags: []string{
 				"kueue_cluster_queue:cluster-batch",
 				"kueue_local_queue:batch",
-				"kueue_workload:job-sample",
 			},
 			StandardTags: []string{},
 		},
@@ -1790,6 +1793,8 @@ func TestKueueWorkloadResourceFlavorTagsPropagateToPodContainers(t *testing.T) {
 					"kueue_cluster_queue:cluster-batch",
 					"kueue_local_queue:batch",
 					"kueue_resource_flavor:a100",
+				})
+				assert.Subset(t, tagInfo.OrchestratorCardTags, []string{
 					"kueue_workload:job-sample",
 				})
 				return
