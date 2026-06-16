@@ -174,6 +174,7 @@ var DefaultProfiles = Map{
 			MkRedaction(`(?m)^\s*Building configuration...\s*`, WithReplacement(""), WithMultiline()),
 			MkRedaction(`Current configuration : (.*)\s*`, WithReplacement(""), WithMultiline()),
 			MkRedaction(`(?m)(?:^!\s*$\s*)?^! Last configuration change at .*?$\s*(?:^!\s*$\s*)?`, WithReplacement(""), WithMultiline()),
+			MkRedaction(`(?m)(?:^!\s*$\s*)?^! NVRAM config last updated at .*$\s*(?:^!\s*$\s*)?`, WithReplacement(""), WithMultiline()),
 			MkRedaction(`(?s)^\s*Using \d+ out of \d+ bytes\s*`, WithReplacement(""), WithMultiline()),
 		},
 		Redactions: []RedactionRule{
@@ -206,7 +207,7 @@ var DefaultProfiles = Map{
 		MetadataRules: []MetadataRule{
 			{
 				Type:   Timestamp,
-				Regex:  regexp.MustCompile(`^! Last configuration change at (.*?)(?:\s+by \S+)?$`),
+				Regex:  regexp.MustCompile(`(?m)^! Last configuration change at (.*?)(?:\s+by \S+)?$`),
 				Format: "15:04:05 MST Mon Jan 2 2006",
 			},
 			{
