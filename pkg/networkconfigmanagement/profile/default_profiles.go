@@ -206,7 +206,7 @@ var DefaultProfiles = Map{
 		MetadataRules: []MetadataRule{
 			{
 				Type:   Timestamp,
-				Regex:  regexp.MustCompile(`(?m)^! Last configuration change at (.*?)(?:\s+by \S+)?$`),
+				Regex:  regexp.MustCompile(`^! Last configuration change at (.*?)(?:\s+by \S+)?$`),
 				Format: "15:04:05 MST Mon Jan 2 2006",
 			},
 			{
