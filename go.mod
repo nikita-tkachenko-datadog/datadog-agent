@@ -27,7 +27,7 @@ replace (
 	// To update the Datadog/opentelemetry-ebpf-profiler dependency on latest commit on datadog branch, change the following line to:
 	// replace go.opentelemetry.io/ebpf-profiler => github.com/DataDog/opentelemetry-ebpf-profiler datadog
 	// and run `go mod tidy` then `dda inv tidy`
-	go.opentelemetry.io/ebpf-profiler => github.com/DataDog/opentelemetry-ebpf-profiler v0.0.0-20260608081522-b0f22c95e990
+	go.opentelemetry.io/ebpf-profiler => github.com/DataDog/opentelemetry-ebpf-profiler v0.0.0-20260615120033-4edb1d33d277
 )
 
 require (
@@ -295,7 +295,7 @@ require (
 	github.com/prometheus-community/pro-bing v0.8.0
 	github.com/prometheus/client_golang v1.23.3-0.20251103151724-a5ae20370e5e
 	github.com/prometheus/client_model v0.6.2
-	github.com/prometheus/common v0.68.0
+	github.com/prometheus/common v0.68.1
 	github.com/prometheus/procfs v0.20.1
 	github.com/redis/go-redis/v9 v9.17.3
 	github.com/rickar/props v1.0.0
@@ -399,7 +399,7 @@ require (
 	istio.io/client-go v1.30.0
 	k8s.io/api v0.35.5
 	k8s.io/apiextensions-apiserver v0.35.5
-	k8s.io/apimachinery v0.35.5
+	k8s.io/apimachinery v0.35.6
 	k8s.io/autoscaler/vertical-pod-autoscaler v1.6.0
 	k8s.io/cli-runtime v0.35.5
 	k8s.io/client-go v0.35.5
@@ -539,7 +539,7 @@ require (
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/digitalocean/go-metadata v0.0.0-20250129100319-e3650a3df44b // indirect
 	github.com/digitalocean/godo v1.193.0 // indirect
-	github.com/docker/cli v29.4.3+incompatible // indirect
+	github.com/docker/cli v29.5.3+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.9.4 // indirect
 	github.com/docker/go-events v0.0.0-20190806004212-e31b211e4f1c // indirect
 	github.com/docker/go-units v0.5.0 // indirect
