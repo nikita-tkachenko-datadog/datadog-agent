@@ -33,10 +33,6 @@ build do
   command "invoke dogstatsd.build", env: env, :live_stream => Omnibus.logger.live_stream(:info)
 
   mkdir "#{install_dir}/etc/datadog-dogstatsd"
-  unless windows_target?
-    mkdir "#{install_dir}/run/"
-    mkdir "#{install_dir}/scripts/"
-  end
 
   # move around bin and config files
   if windows_target?
@@ -49,21 +45,14 @@ build do
 
   if linux_target?
     if debian_target?
-      erb source: "upstart_debian.conf.erb",
-          dest: "#{install_dir}/scripts/datadog-dogstatsd.conf",
-          mode: 0644,
-          vars: { install_dir: install_dir }
-    # Ship a different upstart job definition on RHEL to accommodate the old
-    # version of upstart (0.6.5) that RHEL 6 provides.
+      install_target = "//packages/dogstatsd/linux:install_debian"
     elsif redhat_target? || suse_target?
-      erb source: "upstart_redhat.conf.erb",
-          dest: "#{install_dir}/scripts/datadog-dogstatsd.conf",
-          mode: 0644,
-          vars: { install_dir: install_dir }
+      install_target = "//packages/dogstatsd/linux:install_redhat"
     end
-    erb source: "systemd.service.erb",
-        dest: "#{install_dir}/scripts/datadog-dogstatsd.service",
-        mode: 0644,
-        vars: { install_dir: install_dir }
+    command_on_repo_root "bazelisk run --//:install_dir=#{install_dir} -- #{install_target} --destdir=/",
+      :live_stream => Omnibus.logger.live_stream(:info)
+
+    project.extra_package_file '/etc/init/datadog-dogstatsd.conf'
+    project.extra_package_file '/lib/systemd/system/datadog-dogstatsd.service'
   end
 end
