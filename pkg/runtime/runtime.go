@@ -37,8 +37,6 @@ func SetMaxProcs() bool {
 	}()
 
 	var set bool
-	// This call will cause GOMAXPROCS to be set to the number of vCPUs allocated to the process
-	// if the process is running in a Linux environment (including when its running in a docker / K8s setup).
 	_, err := maxprocs.Set(maxprocs.Logger(log.Debugf))
 	if err != nil {
 		log.Errorf("runtime: error auto-setting maxprocs: %v ", err)
@@ -46,43 +44,34 @@ func SetMaxProcs() bool {
 		set = true
 	}
 
-	ensureMinProcs()
-
 	if max, exists := os.LookupEnv(gomaxprocsKey); exists {
-		if max == "" {
+		switch {
+		case max == "":
 			log.Errorf("runtime: GOMAXPROCS value was empty string")
-			return set
-		}
-
-		_, err = strconv.Atoi(max)
-		if err == nil {
-			// Go runtime will already have parsed the integer and set it properly.
-			return set
-		}
-
-		if before, ok := strings.CutSuffix(max, "m"); ok {
-			// Value represented as millicpus.
-			trimmed := before
-			milliCPUs, err := strconv.Atoi(trimmed)
+		case isInteger(max):
+		case strings.HasSuffix(max, "m"):
+			milliCPUs, err := strconv.Atoi(strings.TrimSuffix(max, "m"))
 			if err != nil {
 				log.Errorf("runtime: error parsing GOMAXPROCS milliCPUs value: %v", max)
-				return set
+			} else {
+				cpus := milliCPUs / 1000
+				log.Infof("runtime: GOMAXPROCS millicpu configuration: %s (resolved to %d CPUs)", max, cpus)
+				runtime.GOMAXPROCS(cpus)
+				set = true
 			}
-
-			cpus := milliCPUs / 1000
-			if cpus < minGOMAXPROCS {
-				cpus = minGOMAXPROCS
-			}
-			log.Infof("runtime: GOMAXPROCS millicpu configuration: %s (resolved to %d CPUs), setting GOMAXPROCS to %d", max, milliCPUs/1000, cpus)
-			runtime.GOMAXPROCS(cpus)
-			set = true
-			return set
+		default:
+			log.Errorf("runtime: unhandled GOMAXPROCS value: %s", max)
 		}
-
-		log.Errorf(
-			"runtime: unhandled GOMAXPROCS value: %s", max)
 	}
+
+	ensureMinProcs()
+
 	return set
+}
+
+func isInteger(s string) bool {
+	_, err := strconv.Atoi(s)
+	return err == nil
 }
 
 // NumVCPU returns the number of virtualizes CPUs available to the process. It should be used instead of
