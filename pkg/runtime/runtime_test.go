@@ -62,17 +62,14 @@ func TestAutoMaxProcs(t *testing.T) {
 func TestEnsureMinProcs(t *testing.T) {
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(0))
 
-	// a value below the minimum is raised to the minimum
 	runtime.GOMAXPROCS(1)
 	ensureMinProcs()
 	assert.Equal(t, minGOMAXPROCS, runtime.GOMAXPROCS(0))
 
-	// a value at the minimum is left untouched
 	runtime.GOMAXPROCS(minGOMAXPROCS)
 	ensureMinProcs()
 	assert.Equal(t, minGOMAXPROCS, runtime.GOMAXPROCS(0))
 
-	// a value above the minimum is never lowered
 	runtime.GOMAXPROCS(minGOMAXPROCS + 2)
 	ensureMinProcs()
 	assert.Equal(t, minGOMAXPROCS+2, runtime.GOMAXPROCS(0))
