@@ -1,0 +1,16 @@
+# Each section from every release note are combined when the
+# CHANGELOG.rst is rendered. So the text needs to be worded so that
+# it does not depend on any information only available in another
+# section. This may mean repeating some details, but each section
+# must be readable independently of the other.
+#
+# Each section note must be formatted as reStructuredText.
+---
+fixes:
+  - |
+    Enforce a minimum ``GOMAXPROCS`` of 2 for the Agent and system-probe even when the
+    value is derived from the cgroup CPU quota. Previously this floor was only applied
+    when ``GOMAXPROCS`` was set explicitly as a milli-cpu value; environments with a
+    cgroup quota below 2 vCPUs (for example 0.25/0.5/1.0 vCPU on ECS Fargate) could end
+    up running with ``GOMAXPROCS=1``, serializing all goroutines onto a single OS thread
+    and degrading throughput.

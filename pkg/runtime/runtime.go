@@ -19,7 +19,23 @@ import (
 
 const (
 	gomaxprocsKey = "GOMAXPROCS"
+	// minGOMAXPROCS is the lowest GOMAXPROCS value we allow the Go runtime to run with.
+	// Go relies heavily on goroutines and a single P serializes every goroutine onto one
+	// OS thread, which causes scheduling stalls (e.g. the eBPF-less system-probe event
+	// pipeline cannot keep up and starts dropping events). automaxprocs floors at 1 when
+	// the cgroup CPU quota is below 2 vCPUs (such as 0.25/0.5/1.0 vCPU on ECS Fargate), so
+	// we enforce this minimum ourselves.
+	minGOMAXPROCS = 2
 )
+
+// ensureMinProcs raises GOMAXPROCS to minGOMAXPROCS when it is currently lower.
+// It never lowers an already-higher value.
+func ensureMinProcs() {
+	if current := runtime.GOMAXPROCS(0); current < minGOMAXPROCS {
+		log.Infof("runtime: GOMAXPROCS resolved to %d, raising to the minimum of %d", current, minGOMAXPROCS)
+		runtime.GOMAXPROCS(minGOMAXPROCS)
+	}
+}
 
 // SetMaxProcs sets the GOMAXPROCS for the go runtime to a sane value
 func SetMaxProcs() bool {
@@ -37,6 +53,10 @@ func SetMaxProcs() bool {
 	} else {
 		set = true
 	}
+
+	// Apply the floor to the cgroup-driven (and explicit integer) path. The explicit
+	// millicpu branch below applies the same floor on its own.
+	ensureMinProcs()
 
 	if max, exists := os.LookupEnv(gomaxprocsKey); exists {
 		if max == "" {
@@ -60,10 +80,10 @@ func SetMaxProcs() bool {
 			}
 
 			cpus := milliCPUs / 1000
-			// Floor at 2 to ensure minimal concurrency: Go relies heavily on
+			// Floor to ensure minimal concurrency: Go relies heavily on
 			// goroutines and a single OS thread can cause scheduling stalls.
-			if cpus < 2 {
-				cpus = 2
+			if cpus < minGOMAXPROCS {
+				cpus = minGOMAXPROCS
 			}
 			log.Infof("runtime: GOMAXPROCS millicpu configuration: %s (resolved to %d CPUs), setting GOMAXPROCS to %d", max, milliCPUs/1000, cpus)
 			runtime.GOMAXPROCS(cpus)
